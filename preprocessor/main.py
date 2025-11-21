@@ -336,6 +336,9 @@ def detect_openings(config: PreprocessorConfig,
 
     inlet_outlets, data = detectOpenings(volume)
 
+    # Save intermediate detection result before matching to centerline
+    save_debug_file(config, "openings_detected", data)
+
     # Calculate opening centers from detected voxels
     opening_centers = []
     for io in inlet_outlets:
