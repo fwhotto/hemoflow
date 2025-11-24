@@ -48,7 +48,8 @@ def getOpeningsFromCenterline(fileName):
     data = reader.GetOutput()
     points = data.GetPoints()
     pdata = data.GetPointData()
-    rdata = pdata.GetArray("MaximumInscribedSphereRadius") 
+    # TODO make configurable field to allow also MaximumInscribedSphereRadius
+    rdata = pdata.GetArray("Radius")
 
     # Read the number of lines in the dataset
     nLines = data.GetNumberOfLines()
