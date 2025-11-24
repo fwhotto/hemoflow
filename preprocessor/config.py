@@ -32,6 +32,35 @@ class DebugConfig:
 
 
 @dataclass
+class RotationConfig:
+    """Configuration for geometry rotation preprocessing.
+
+    Attributes:
+        enabled: Whether to apply geometry rotation
+        inlet_target_axis: Target axis for inlet alignment (e.g., '-x', '+y', '-z')
+        inlet_centerline_index: Index of inlet in centerline (0 = first line start)
+        position_at_boundary: If True, translate inlet to bounding box face
+    """
+    enabled: bool = True
+    inlet_target_axis: str = "-x"
+    inlet_centerline_index: int = 0
+    position_at_boundary: bool = True
+
+    def __post_init__(self):
+        """Validate rotation configuration."""
+        if self.enabled:
+            # Validate axis format
+            axis_lower = self.inlet_target_axis.lower().strip()
+            if len(axis_lower) != 2 or axis_lower[0] not in ['+', '-'] or axis_lower[1] not in ['x', 'y', 'z']:
+                raise ValueError(
+                    f"Invalid inlet_target_axis '{self.inlet_target_axis}'. "
+                    f"Expected format: '+x', '-y', etc."
+                )
+            if self.inlet_centerline_index < 0:
+                raise ValueError(f"inlet_centerline_index must be non-negative, got {self.inlet_centerline_index}")
+
+
+@dataclass
 class PreprocessorConfig:
     """Configuration for the HemoFlow preprocessor pipeline.
 
@@ -47,6 +76,8 @@ class PreprocessorConfig:
         distance: Opening detection threshold in voxels
         si_factor: Conversion factor from mm to meters (default: 0.001)
         inhomogen: Use inhomogeneous stent resistance (default: False)
+        use_normal_for_face_selection: Use tangent vectors to select boundary faces (default: True)
+        rotation: Rotation configuration for aligning inlet with bounding box
         debug: Debug configuration
         config_dir: Directory containing the config file (for resolving relative paths)
     """
@@ -61,6 +92,8 @@ class PreprocessorConfig:
     distance: int = 4
     si_factor: float = 0.001
     inhomogen: bool = False
+    use_normal_for_face_selection: bool = False
+    rotation: RotationConfig = field(default_factory=RotationConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     config_dir: str = "."
 
@@ -174,6 +207,21 @@ class PreprocessorConfig:
             config_kwargs['inhomogen'] = bool(data['inhomogen'])
         if 'output_dir' in data:
             config_kwargs['output_dir'] = data['output_dir']
+        if 'use_normal_for_face_selection' in data:
+            config_kwargs['use_normal_for_face_selection'] = bool(data['use_normal_for_face_selection'])
+
+        # Handle rotation configuration
+        rotation_config = RotationConfig()
+        if 'rotation' in data:
+            rotation_data = data['rotation']
+            rotation_config.enabled = rotation_data.get('enabled', False)
+            if 'inlet_target_axis' in rotation_data:
+                rotation_config.inlet_target_axis = rotation_data['inlet_target_axis']
+            if 'inlet_centerline_index' in rotation_data:
+                rotation_config.inlet_centerline_index = int(rotation_data['inlet_centerline_index'])
+            if 'position_at_boundary' in rotation_data:
+                rotation_config.position_at_boundary = bool(rotation_data['position_at_boundary'])
+        config_kwargs['rotation'] = rotation_config
 
         # Handle debug configuration
         debug_config = DebugConfig()

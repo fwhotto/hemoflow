@@ -10,6 +10,7 @@ from typing import Tuple, List, Optional
 import scipy.interpolate as scpinter
 import vtk
 import slice
+from pathlib import Path
 
 from config import PreprocessorConfig, DebugConfig
 from readCL import getOpeningsFromCenterline, convertToVoxelspace
@@ -19,6 +20,7 @@ from detectOpenings import detectOpenings, paint_inlets_outlets
 from vtk.numpy_interface import dataset_adapter as dsa
 from vtkmodules.vtkIOXML import vtkXMLPolyDataReader
 from vtk.util import numpy_support
+import rotate_geometry
 
 
 @dataclass
@@ -135,34 +137,172 @@ def inRange3D(value3D, rangeValue3D, distance):
     
     return isInRange
 
+def select_face_from_normal(tangent: np.ndarray) -> int:
+    """Select boundary face based on tangent/normal vector.
+
+    The tangent vector points along the centerline (into the vessel at outlets),
+    so we select the face OPPOSITE to the tangent direction.
+
+    Args:
+        tangent: Normalized tangent vector along centerline direction
+
+    Returns:
+        Face index [0-5] -> [X-, X+, Y-, Y+, Z-, Z+]
+    """
+    abs_tangent = np.abs(tangent)
+    dominant_axis = np.argmax(abs_tangent)
+
+    # Tangent points INTO vessel, so opening is on OPPOSITE face
+    # Negative tangent -> opening on positive face, positive tangent -> opening on negative face
+    if tangent[dominant_axis] > 0:
+        return dominant_axis * 2      # X-, Y-, or Z- (opposite of positive tangent)
+    else:
+        return dominant_axis * 2 + 1  # X+, Y+, or Z+ (opposite of negative tangent)
+
+
+def select_closest_face(pos: np.ndarray, domain_size: Tuple[int, int, int]) -> int:
+    """Select boundary face based on closest distance.
+
+    Args:
+        pos: Position in voxel space (x, y, z)
+        domain_size: Domain dimensions (x, y, z)
+
+    Returns:
+        Face index [0-5] -> [X-, X+, Y-, Y+, Z-, Z+]
+    """
+    face_distances = [
+        pos[0],                    # Distance to X- (face 0)
+        domain_size[0] - pos[0],   # Distance to X+ (face 1)
+        pos[1],                    # Distance to Y- (face 2)
+        domain_size[1] - pos[1],   # Distance to Y+ (face 3)
+        pos[2],                    # Distance to Z- (face 4)
+        domain_size[2] - pos[2],   # Distance to Z+ (face 5)
+    ]
+    return int(np.argmin(face_distances))
+
+
+def check_corner_proximity(pos: np.ndarray,
+                           domain_size: Tuple[int, int, int],
+                           threshold: float) -> dict:
+    """Check if opening is near a corner or edge.
+
+    Args:
+        pos: Position in voxel space
+        domain_size: Domain dimensions
+        threshold: Distance threshold for "close to boundary"
+
+    Returns:
+        Dictionary with corner detection info
+    """
+    face_distances = [
+        pos[0], domain_size[0] - pos[0],
+        pos[1], domain_size[1] - pos[1],
+        pos[2], domain_size[2] - pos[2],
+    ]
+    close_faces = [i for i, d in enumerate(face_distances) if d < threshold]
+
+    return {
+        'is_corner': len(close_faces) > 1,
+        'close_faces': close_faces,
+        'num_close': len(close_faces),
+        'min_distance': min(face_distances)
+    }
+
+
 def generateCutList(voxelDomainSize: Tuple[int, int, int],
                     radiusTangentVoxelList: List,
-                    distance: int) -> np.ndarray:
+                    distance: int,
+                    use_normals: bool = True) -> np.ndarray:
     """Generate list of domain boundaries to cut for openings.
+
+    Uses tangent vectors to intelligently select ONE face per opening,
+    avoiding corner/edge detection issues.
 
     Args:
         voxelDomainSize: Size of voxelized domain (x, y, z)
         radiusTangentVoxelList: List of (radius, position, tangent) tuples in voxel space
-        distance: Distance threshold for opening detection
+        distance: Distance threshold for validation
+        use_normals: If True, use tangent vectors; else use closest face
 
     Returns:
         Array of boundary indices to cut [0-5] -> [X-, X+, Y-, Y+, Z-, Z+]
     """
     sidesToCut = np.zeros(6)
+    face_names = ['X-', 'X+', 'Y-', 'Y+', 'Z-', 'Z+']
 
     logging.debug(f"Generating cutlist for voxel domain size: {voxelDomainSize}")
+    logging.debug(f"  Using {'normal vectors' if use_normals else 'closest face'} for face selection")
 
-    for o in radiusTangentVoxelList:
-        pos = o[1]
-        logging.debug(f"  Centerline point: {pos}")
+    for idx, o in enumerate(radiusTangentVoxelList):
+        radius, pos, tangent = o
+        logging.info(f"  Opening {idx}: position={pos}, tangent={tangent}, |tangent|={np.linalg.norm(tangent):.3f}")
 
-        for j in range(3):
-            if inRange(pos[j], 0, distance):
-                sidesToCut[j*2]=1
-            if inRange(pos[j], voxelDomainSize[j], distance):
-                sidesToCut[j*2+1]=1
+        # Select face using hybrid method
+        if use_normals and np.linalg.norm(tangent) > 0.1:
+            # Try normal-based selection
+            normal_face = select_face_from_normal(tangent)
+            closest_face = select_closest_face(pos, voxelDomainSize)
 
-    return np.where(sidesToCut == 1)[0]
+            # Calculate distance to normal-selected face
+            axis = normal_face // 2
+            if normal_face % 2 == 0:  # Negative face
+                dist_to_normal_face = pos[axis]
+            else:  # Positive face
+                dist_to_normal_face = voxelDomainSize[axis] - pos[axis]
+
+            # Use normal-based if opening is reasonably close to that face
+            # Otherwise use closest face (more reliable for corner cases)
+            if dist_to_normal_face < distance * 3:
+                selected_face = normal_face
+                method = "normal"
+            else:
+                selected_face = closest_face
+                method = "closest (normal face too far)"
+                logging.debug(
+                    f"  Opening {idx}: Normal suggests face {normal_face} but it's {dist_to_normal_face:.1f} voxels away. "
+                    f"Using closest face {closest_face} instead."
+                )
+        else:
+            selected_face = select_closest_face(pos, voxelDomainSize)
+            method = "closest"
+            if use_normals and np.linalg.norm(tangent) <= 0.1:
+                logging.warning(
+                    f"  Opening {idx}: Tangent vector too small (|tangent|={np.linalg.norm(tangent):.3f}), "
+                    f"falling back to closest face"
+                )
+
+        # Validate opening position
+        corner_info = check_corner_proximity(pos, voxelDomainSize, distance)
+
+        if corner_info['is_corner']:
+            close_face_names = [face_names[i] for i in corner_info['close_faces']]
+            logging.warning(
+                f"  Opening {idx} at {pos} is near corner/edge "
+                f"(close to {corner_info['num_close']} faces: {close_face_names}). "
+                f"Selected face {face_names[selected_face]} using {method} method."
+            )
+
+        # Calculate distance to selected face
+        axis = selected_face // 2
+        if selected_face % 2 == 0:  # Negative face
+            dist_to_face = pos[axis]
+        else:  # Positive face
+            dist_to_face = voxelDomainSize[axis] - pos[axis]
+
+        if dist_to_face > distance * 1.5:
+            logging.warning(
+                f"  Opening {idx} is {dist_to_face:.1f} voxels from selected face {face_names[selected_face]}, "
+                f"but distance threshold is {distance}. Consider increasing distance parameter."
+            )
+
+        sidesToCut[selected_face] = 1
+        logging.debug(f"    -> Selected face: {face_names[selected_face]} (index {selected_face})")
+
+    cut_faces = np.where(sidesToCut == 1)[0]
+    cut_face_names = [face_names[i] for i in cut_faces]
+    logging.info(f"  Faces to cut: {cut_face_names} (indices: {cut_faces})")
+
+    return cut_faces
 
 def scaleAndShiftData(points: List, scale: Tuple, shift: Tuple) -> List:
     """Transform points from physical space to voxel space.
@@ -203,6 +343,66 @@ def save_debug_file(config: PreprocessorConfig, name: str, data: np.ndarray) -> 
     output_path = config.resolve_path(config.debug.output_dir) / f"{config.output_base_name}{name}.nrrd"
     logging.debug(f"Saving debug file: {output_path}")
     nrrd.write(str(output_path), data)
+
+
+def apply_geometry_rotation(config: PreprocessorConfig) -> None:
+    """Apply geometry rotation if enabled in configuration.
+
+    This function rotates both the STL and centerline VTP files to align the inlet
+    with a specified bounding box face. The rotated files are saved with '_rotated'
+    suffix, and the config is updated to use the rotated files.
+
+    Args:
+        config: Preprocessor configuration
+
+    Modifies:
+        config.geometry_stl: Updated to rotated STL path if rotation is applied
+        config.centerline_vtp: Updated to rotated VTP path if rotation is applied
+    """
+    if not config.rotation.enabled:
+        return
+
+    logging.info("="*60)
+    logging.info("Applying geometry rotation preprocessing")
+    logging.info("="*60)
+
+    # Resolve input paths
+    stl_path = config.resolve_path(config.geometry_stl)
+    vtp_path = config.resolve_path(config.centerline_vtp)
+
+    # Generate output paths with '_rotated' suffix
+    output_dir = config.resolve_path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    stl_name = stl_path.stem
+    vtp_name = vtp_path.stem
+    output_stl = str(output_dir / f"{stl_name}_rotated{stl_path.suffix}")
+    output_vtp = str(output_dir / f"{vtp_name}_rotated{vtp_path.suffix}")
+
+    logging.info(f"  Input STL: {stl_path}")
+    logging.info(f"  Input VTP: {vtp_path}")
+    logging.info(f"  Target axis: {config.rotation.inlet_target_axis}")
+    logging.info(f"  Inlet centerline index: {config.rotation.inlet_centerline_index}")
+    logging.info(f"  Position at boundary: {config.rotation.position_at_boundary}")
+
+    # Perform rotation
+    rotation_matrix, translation = rotate_geometry.rotate_geometry_to_align_inlet(
+        str(stl_path),
+        str(vtp_path),
+        config.rotation.inlet_target_axis,
+        output_stl,
+        output_vtp,
+        inlet_index=config.rotation.inlet_centerline_index,
+        position_at_boundary=config.rotation.position_at_boundary
+    )
+
+    # Update config to use rotated files
+    config.geometry_stl = output_stl
+    config.centerline_vtp = output_vtp
+
+    logging.info(f"  Rotated STL saved to: {output_stl}")
+    logging.info(f"  Rotated VTP saved to: {output_vtp}")
+    logging.info("="*60)
 
 
 def voxelize_geometry(config: PreprocessorConfig) -> VoxelizationResult:
@@ -276,7 +476,8 @@ def extract_openings(config: PreprocessorConfig, voxel_result: VoxelizationResul
     cut_list = generateCutList(
         voxel_result.domain_size,
         radius_tangent_voxel_list,
-        config.distance
+        config.distance,
+        use_normals=config.use_normal_for_face_selection
     )
 
     logging.info(f"  Sides to cut for openings: {cut_list}")
@@ -317,6 +518,57 @@ def create_walls(config: PreprocessorConfig,
     logging.info(f"  Walls: {walls}")
 
     return vol_with_walls, sliced
+
+
+def get_opening_face(center: np.ndarray, volume_shape: Tuple[int, int, int], threshold: float = 2.0) -> Optional[str]:
+    """Determine which boundary face an opening is on.
+
+    Args:
+        center: Opening center coordinates (x, y, z)
+        volume_shape: Shape of volume (nx, ny, nz)
+        threshold: Distance threshold from boundary (in voxels)
+
+    Returns:
+        Face identifier ('X-', 'X+', 'Y-', 'Y+', 'Z-', 'Z+') or None
+    """
+    nx, ny, nz = volume_shape
+    x, y, z = center
+
+    faces = []
+    if x < threshold:
+        faces.append('X-')
+    if x > nx - threshold:
+        faces.append('X+')
+    if y < threshold:
+        faces.append('Y-')
+    if y > ny - threshold:
+        faces.append('Y+')
+    if z < threshold:
+        faces.append('Z-')
+    if z > nz - threshold:
+        faces.append('Z+')
+
+    # Return the closest face if multiple
+    if len(faces) == 1:
+        return faces[0]
+    elif len(faces) > 1:
+        # Calculate distances to each face
+        distances = []
+        for face in faces:
+            if face == 'X-':
+                distances.append(x)
+            elif face == 'X+':
+                distances.append(nx - x)
+            elif face == 'Y-':
+                distances.append(y)
+            elif face == 'Y+':
+                distances.append(ny - y)
+            elif face == 'Z-':
+                distances.append(z)
+            elif face == 'Z+':
+                distances.append(nz - z)
+        return faces[np.argmin(distances)]
+    return None
 
 
 def detect_openings(config: PreprocessorConfig,
@@ -377,6 +629,36 @@ def detect_openings(config: PreprocessorConfig,
                 opening_center.append(cVox)
                 opening_normal.append(np.array((rCL[2][0], rCL[2][1], rCL[2][2])))
                 inlets_outlets_sorted.append(inlet_outlets[ccVox])
+
+    # If rotation was applied, reorder openings to put the inlet first based on target face
+    if config.rotation.enabled:
+        # Map target axis to face identifier
+        axis_to_face_map = {
+            '-x': 'X-', '+x': 'X+',
+            '-y': 'Y-', '+y': 'Y+',
+            '-z': 'Z-', '+z': 'Z+'
+        }
+        target_face = axis_to_face_map.get(config.rotation.inlet_target_axis.lower())
+
+        if target_face:
+            # Find which opening is on the target inlet face
+            inlet_idx = None
+            for i, center in enumerate(opening_center):
+                face = get_opening_face(center, volume.shape, threshold=5.0)
+                logging.info(f"  Opening {i}: center={center}, face={face}, radius={opening_radius[i]:.6f}m")
+                if face == target_face:
+                    inlet_idx = i
+                    logging.info(f"  → Identified as INLET (on target face {target_face})")
+
+            # Reorder to put inlet first
+            if inlet_idx is not None and inlet_idx != 0:
+                logging.info(f"  Reordering: moving opening {inlet_idx} to position 0 (inlet)")
+                # Swap inlet to first position
+                for lst in [opening_radius, opening_normalized_q_ratio, opening_center,
+                           opening_normal, inlets_outlets_sorted]:
+                    lst[0], lst[inlet_idx] = lst[inlet_idx], lst[0]
+            elif inlet_idx is None:
+                logging.warning(f"  Could not find opening on target inlet face {target_face}")
 
     opening_index, opening_centers_final, painted_openings = paint_inlets_outlets(
         inlets_outlets_sorted,
@@ -581,8 +863,14 @@ def main() -> None:
 
     try:
         # Pipeline execution
+
+        # Step 1: Apply geometry rotation if enabled
+        apply_geometry_rotation(config)
+
+        # Step 2: Voxelize geometry
         voxel_result = voxelize_geometry(config)
 
+        # Step 3: Extract openings from centerline
         opening_data = extract_openings(config, voxel_result)
 
         wall_volume, sliced = create_walls(config, voxel_result.volume, opening_data.cut_list)

@@ -71,6 +71,13 @@ Use inhomogeneous stent resistance coefficients from VTP file.
 - **Requires**: Stent VTP file at `{stent_mesh_base}values.vtp` with `linearCoeff` and `quadraticCoeff` point data
 - **Purpose**: Spatially varying resistance for realistic stent modeling
 
+### `use_normal_for_face_selection` (boolean, default: false)
+Use centerline tangent vectors to select boundary faces (experimental).
+- **Example**: `true` or `false`
+- **Default (false)**: Uses closest-face selection - most reliable
+- **True**: Uses tangent vectors with fallback - may help in some cases but less reliable
+- **Recommendation**: Leave as default (false) unless debugging specific geometry issues
+
 ---
 
 ## Debug Configuration (optional section)
@@ -215,11 +222,14 @@ python main.py config.json --log-level DEBUG --no-debug
 
 ### "Number of voxelized openings differs from centerline openings"
 1. Run with `--debug-outputs openings_detected` to visualize detected openings
-2. Check if centerline endpoints are at **corners** (near multiple boundaries)
-3. Adjust `distance` parameter:
+2. **This issue has been largely resolved** by the closest-face selection algorithm (default behavior)
+3. If still occurring:
+   - Ensure `use_normal_for_face_selection=false` (default)
+   - Check if centerline endpoints are actually within the voxelized domain
+   - Verify centerline quality (endpoints should be near boundaries)
+4. Adjust `distance` parameter if needed:
    - Increase (e.g., 12) if openings aren't being matched
-   - Decrease (e.g., 4) if too many boundaries are being cut
-4. Verify geometry: openings should be on face centers, not corners
+   - Note: The algorithm now selects ONE face per opening, avoiding the previous corner/edge issues
 
 ### Resolution Too Coarse
 - Increase `target_elements` (e.g., 2000000, 3000000)

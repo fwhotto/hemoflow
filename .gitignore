@@ -63,3 +63,11 @@ temp*/
 *_output.csv
 #testcase*/
 *.npz
+
+# run configurations
+.run
+
+
+
+# Debug outputs
+*.nrrd
