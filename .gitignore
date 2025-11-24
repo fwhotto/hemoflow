@@ -67,7 +67,10 @@ temp*/
 # run configurations
 .run
 
-
-
 # Debug outputs
 *.nrrd
+
+# Agents
+.claude
+CLAUDE.md
+AGENTS.md

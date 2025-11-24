@@ -45,6 +45,11 @@ When compiling hemoflow cmake needs help to find our custom HDF5:
 cmake -DHDF5_ROOT=/opt/hdf5 ..
 make -j 4
 ```
+
+## MPI run on macOS
+
+Open mpi 5.0.x causes strange bugs on macOS. Has been tested with mpich and it works.
+
 ### Compilation on newer systems
 
 Newer compilers can throw an error, which can be disabled in the CmakeLists adding
