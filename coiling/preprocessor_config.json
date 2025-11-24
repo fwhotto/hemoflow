@@ -1,11 +1,12 @@
 {
   "geometry_original_stl": "input/full_closed.stl",
   "centerline_vtp": "input/centerline_model.vtp",
+  "coil_stl": "input/framing-coil.stl",
   "stent_mesh_base": "",
   "target_elements": "1000000",
   "target_dx": "",
-  "output_base_name": "geometry_",
-  "output_dir": "output/",
+  "output_base_name": "geometry_w_coil_",
+  "output_dir": "input/",
   "cutWidth": "1",
   "distance": "8",
   "use_normal_for_face_selection": true,
@@ -17,7 +18,7 @@
   },
   "debug": {
     "enabled": true,
-    "outputs": ["fluid_only", "openings_detected", "geometry"],
-    "output_dir": "output/"
+    "outputs": ["fluid_only", "openings_detected", "geometry", "coil", "geometry_with_coil"],
+    "output_dir": "input/preprocessor"
   }
 }

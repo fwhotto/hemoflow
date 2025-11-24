@@ -22,6 +22,14 @@ from vtkmodules.vtkIOXML import vtkXMLPolyDataReader
 from vtk.util import numpy_support
 import rotate_geometry
 
+# PyVista import for debug visualization
+try:
+    import pyvista as pv
+    PYVISTA_AVAILABLE = True
+except ImportError:
+    PYVISTA_AVAILABLE = False
+    logging.warning("PyVista not available - debug visualizations will be skipped")
+
 
 @dataclass
 class VoxelizationResult:
@@ -76,6 +84,87 @@ def setup_logging(level: str = "INFO") -> None:
     )
 
 
+def visualize_geometry_debug(config: PreprocessorConfig, title: str, **meshes) -> None:
+    """Create interactive PyVista visualization for debugging geometry transformations.
+
+    Args:
+        config: Preprocessor configuration
+        title: Window title describing the current step
+        **meshes: Named meshes to visualize. Can be:
+            - STL file path (str): Loads and displays mesh
+            - PyVista mesh object: Displays directly
+            - NumPy boolean array: Converts voxels to mesh
+            - Tuple (voxel_array, dx, shift): Voxels with spacing
+
+    Example:
+        visualize_geometry_debug(config, "After Rotation",
+                                vessel="vessel_rotated.stl",
+                                coil="coil_rotated.stl")
+    """
+    if not PYVISTA_AVAILABLE:
+        logging.debug(f"Skipping visualization '{title}' - PyVista not available")
+        return
+
+    if not config.debug.enabled:
+        return
+
+    logging.info(f"[DEBUG VIZ] {title}")
+
+    plotter = pv.Plotter()
+    plotter.add_text(title, position='upper_edge', font_size=12, color='black')
+
+    colors = ['red', 'blue', 'green', 'yellow', 'cyan', 'magenta', 'orange', 'purple']
+    color_idx = 0
+
+    for name, data in meshes.items():
+        if data is None:
+            continue
+
+        try:
+            # Handle different data types
+            if isinstance(data, str):
+                # STL file path
+                mesh = pv.read(data)
+                logging.info(f"  {name}: {data} (points: {mesh.n_points})")
+            elif isinstance(data, tuple) and len(data) == 3:
+                # (voxel_array, dx, shift)
+                voxel_array, dx, shift = data
+                if isinstance(voxel_array, np.ndarray) and voxel_array.dtype == bool:
+                    # Create uniform grid from voxels
+                    grid = pv.ImageData(dimensions=voxel_array.shape)
+                    grid.spacing = (dx, dx, dx)
+                    grid.origin = shift
+                    grid.point_data['values'] = voxel_array.flatten(order='F')
+                    # Extract surface
+                    mesh = grid.contour([0.5])
+                    logging.info(f"  {name}: voxel array {voxel_array.shape}, dx={dx}")
+                else:
+                    continue
+            elif isinstance(data, np.ndarray) and data.dtype == bool:
+                # Boolean voxel array without spacing
+                grid = pv.ImageData(dimensions=data.shape)
+                grid.point_data['values'] = data.flatten(order='F')
+                mesh = grid.contour([0.5])
+                logging.info(f"  {name}: voxel array {data.shape}")
+            else:
+                # Assume it's already a PyVista mesh
+                mesh = data
+                logging.info(f"  {name}: mesh object")
+
+            # Add mesh to plotter
+            color = colors[color_idx % len(colors)]
+            plotter.add_mesh(mesh, color=color, opacity=0.7, label=name)
+            color_idx += 1
+
+        except Exception as e:
+            logging.warning(f"  Could not visualize {name}: {e}")
+
+    plotter.add_legend()
+    plotter.add_axes()
+    plotter.show_bounds()
+    plotter.show()
+
+
 def setup_argparse() -> argparse.ArgumentParser:
     """Set up command-line argument parser.
 
@@ -109,7 +198,7 @@ Examples:
     parser.add_argument(
         '--debug-outputs',
         help='Comma-separated list of debug outputs to generate: '
-             'fluid_only, wall_fluid, geometry, stent_final, stent_linear, stent_quadratic'
+             'fluid_only, wall_fluid, geometry, coil, stent_final, stent_linear, stent_quadratic'
     )
 
     parser.add_argument(
@@ -385,6 +474,13 @@ def apply_geometry_rotation(config: PreprocessorConfig) -> None:
     logging.info(f"  Inlet centerline index: {config.rotation.inlet_centerline_index}")
     logging.info(f"  Position at boundary: {config.rotation.position_at_boundary}")
 
+    # Debug visualization: Show original geometries
+    # if config.has_coil:
+    #     coil_path = config.resolve_path(config.coil_stl)
+    #     visualize_geometry_debug(config, "Step 1: Original Geometries (Before Rotation)",
+    #                              vessel=str(stl_path),
+    #                              coil=str(coil_path))
+
     # Perform rotation
     rotation_matrix, translation = rotate_geometry.rotate_geometry_to_align_inlet(
         str(stl_path),
@@ -402,6 +498,39 @@ def apply_geometry_rotation(config: PreprocessorConfig) -> None:
 
     logging.info(f"  Rotated STL saved to: {output_stl}")
     logging.info(f"  Rotated VTP saved to: {output_vtp}")
+
+    # Debug visualization: Show vessel after rotation (before coil rotation)
+    # if config.has_coil:
+    #     visualize_geometry_debug(config, "Step 2: After Vessel Rotation (Before Coil Rotation)",
+    #                              vessel_rotated=output_stl)
+
+    # Apply same rotation and translation to coil if present
+    if config.has_coil:
+        logging.info("  Applying same transformation to coil geometry")
+        coil_path = config.resolve_path(config.coil_stl)
+        coil_name = coil_path.stem
+        output_coil = str(output_dir / f"{coil_name}_rotated{coil_path.suffix}")
+
+        # Create temporary rotated coil
+        temp_coil = str(output_dir / f"{coil_name}_temp{coil_path.suffix}")
+        rotate_geometry.rotate_stl(str(coil_path), rotation_matrix, temp_coil)
+
+        # Apply translation if used
+        if config.rotation.position_at_boundary:
+            rotate_geometry.translate_stl(temp_coil, translation, output_coil)
+            Path(temp_coil).unlink()  # Clean up temp file
+        else:
+            Path(temp_coil).rename(output_coil)
+
+        # Update config to use rotated coil
+        config.coil_stl = output_coil
+        logging.info(f"  Rotated coil saved to: {output_coil}")
+
+        # Debug visualization: Show both vessel and coil after rotation/translation
+        # visualize_geometry_debug(config, "Step 3: After Coil Rotation & Translation (Final)",
+        #                          vessel=output_stl,
+        #                          coil=output_coil)
+
     logging.info("="*60)
 
 
@@ -796,6 +925,112 @@ def process_stent(config: PreprocessorConfig,
     )
 
 
+def process_coil(config: PreprocessorConfig,
+                 geometry_result: GeometryResult,
+                 voxel_result: VoxelizationResult,
+                 sliced: List,
+                 cut_list: np.ndarray) -> np.ndarray:
+    """Voxelize coil geometry and mark as wall using 3-projection method.
+
+    Args:
+        config: Preprocessor configuration
+        geometry_result: Current geometry with openings
+        voxel_result: Result from vessel voxelization
+        sliced: Slicing indices from wall creation
+        cut_list: List of boundary indices to cut
+
+    Returns:
+        Updated geometry volume with coil marked as wall (flag=1)
+    """
+    logging.info("Voxelizing coil geometry from 3 projections")
+
+    coil_stl = str(config.resolve_path(config.coil_stl))
+    domain_data = (voxel_result.scale, voxel_result.shift, voxel_result.domain_size, voxel_result.bbox)
+
+    # Voxelize from 3 different projections
+    logging.info("  Projection #1")
+    voxelCoil1, _ = voxelize(coil_stl, config.target_elements, True, domain_data)
+    logging.info(f"    Shape: {voxelCoil1.shape}, Voxels: {np.count_nonzero(voxelCoil1)}")
+
+    logging.info("  Projection #2")
+    voxelCoil2, _ = voxelize(coil_stl, config.target_elements, True, domain_data, 0)
+    logging.info(f"    Shape: {voxelCoil2.shape}, Voxels: {np.count_nonzero(voxelCoil2)}")
+
+    logging.info("  Projection #3")
+    voxelCoil3, _ = voxelize(coil_stl, config.target_elements, True, domain_data, 1)
+    logging.info(f"    Shape: {voxelCoil3.shape}, Voxels: {np.count_nonzero(voxelCoil3)}")
+
+    # Merge projections
+    logging.info("  Merging projections")
+    coil_domain = np.logical_or(np.logical_or(voxelCoil1, voxelCoil2), voxelCoil3)
+    logging.info(f"    Merged shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
+
+    # Apply slicing
+    logging.info(f"  Slicing indices: {sliced}")
+    coil_domain = coil_domain[sliced[0]:sliced[1], sliced[2]:sliced[3], sliced[4]:sliced[5]]
+    logging.info(f"    After slicing shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
+
+    # Apply cutting for openings
+    logging.info(f"  Cutting for openings (cut_list: {cut_list})")
+    if 0 in cut_list:
+        coil_domain = coil_domain[config.cut_width:, :, :]
+        logging.info(f"    Cut face 0 (X-), shape: {coil_domain.shape}")
+    if 1 in cut_list:
+        coil_domain = coil_domain[:-config.cut_width, :, :]
+        logging.info(f"    Cut face 1 (X+), shape: {coil_domain.shape}")
+    if 2 in cut_list:
+        coil_domain = coil_domain[:, config.cut_width:, :]
+        logging.info(f"    Cut face 2 (Y-), shape: {coil_domain.shape}")
+    if 3 in cut_list:
+        coil_domain = coil_domain[:, :-config.cut_width, :]
+        logging.info(f"    Cut face 3 (Y+), shape: {coil_domain.shape}")
+    if 4 in cut_list:
+        coil_domain = coil_domain[:, :, config.cut_width:]
+        logging.info(f"    Cut face 4 (Z-), shape: {coil_domain.shape}")
+    if 5 in cut_list:
+        coil_domain = coil_domain[:, :, :-config.cut_width]
+        logging.info(f"    Cut face 5 (Z+), shape: {coil_domain.shape}")
+
+    logging.info(f"    After cutting shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
+
+    # Save debug output
+    save_debug_file(config, "coil", coil_domain.astype(np.short, copy=False))
+
+    # Check geometry volume shape
+    logging.info(f"  Geometry volume shape: {geometry_result.volume.shape}")
+    logging.info(f"  Coil domain shape: {coil_domain.shape}")
+
+    if geometry_result.volume.shape != coil_domain.shape:
+        logging.error(f"  ERROR: Shape mismatch! geometry={geometry_result.volume.shape} vs coil={coil_domain.shape}")
+        return geometry_result.volume
+
+    # Mark coil voxels as WALL (flag=1) in geometry
+    geometry_volume = geometry_result.volume.copy()
+
+    # Count how many voxels will be changed
+    coil_voxel_count = np.count_nonzero(coil_domain)
+    logging.info(f"  Marking {coil_voxel_count} coil voxels as wall (flag=1)")
+
+    # Check what values exist at coil positions before
+    coil_positions_before = geometry_volume[coil_domain]
+    unique_before, counts_before = np.unique(coil_positions_before, return_counts=True)
+    logging.info(f"  Values at coil positions before: {dict(zip(unique_before, counts_before))}")
+
+    # Mark coil as wall
+    geometry_volume[coil_domain] = 1  # WALL_VOXEL = 1
+
+    # Check what values exist at coil positions after
+    coil_positions_after = geometry_volume[coil_domain]
+    unique_after, counts_after = np.unique(coil_positions_after, return_counts=True)
+    logging.info(f"  Values at coil positions after: {dict(zip(unique_after, counts_after))}")
+
+    # Count total walls in final geometry
+    wall_count = np.count_nonzero(geometry_volume == 1)
+    logging.info(f"  Total wall voxels in final geometry: {wall_count}")
+
+    return geometry_volume
+
+
 def save_geometry(config: PreprocessorConfig,
                   geometry_result: GeometryResult,
                   voxel_result: VoxelizationResult,
@@ -880,6 +1115,13 @@ def main() -> None:
         stent_result = None
         if config.has_stent:
             stent_result = process_stent(config, voxel_result, sliced, opening_data.cut_list)
+
+        # Process coil if configured
+        if config.has_coil:
+            geometry_result.volume = process_coil(config, geometry_result, voxel_result,
+                                                   sliced, opening_data.cut_list)
+            # Save final geometry with coil for visualization
+            save_debug_file(config, "geometry_with_coil", geometry_result.volume.astype(np.short, copy=False))
 
         save_geometry(config, geometry_result, voxel_result, stent_result)
 

@@ -19,7 +19,7 @@ class DebugConfig:
     Attributes:
         enabled: Whether debug outputs are enabled
         outputs: Set of debug file names to generate (fluid_only, wall_fluid,
-                 geometry, stent_final, stent_linear, stent_quadratic)
+                 geometry, coil, stent_final, stent_linear, stent_quadratic)
         output_dir: Directory for debug files (relative to config file or absolute)
     """
     enabled: bool = False
@@ -68,6 +68,7 @@ class PreprocessorConfig:
         geometry_stl: Path to vessel STL file (typically in mm units)
         centerline_vtp: Path to VTP file with centerline data
         stent_mesh_base: Path prefix for stent STL files (empty if no stent)
+        coil_stl: Path to coil STL file (empty if no coil)
         target_elements: Target voxel count (mutually exclusive with target_dx)
         target_dx: Voxel size in mm (mutually exclusive with target_elements)
         output_base_name: Prefix for output NPZ and debug files
@@ -84,6 +85,7 @@ class PreprocessorConfig:
     geometry_stl: str
     centerline_vtp: str
     stent_mesh_base: str = ""
+    coil_stl: str = ""
     target_elements: Optional[int] = None
     target_dx: Optional[float] = None
     output_base_name: str = "geometry_"
@@ -136,6 +138,12 @@ class PreprocessorConfig:
                 if not stent_files:
                     raise FileNotFoundError(f"No stent STL files found matching: {self.stent_mesh_base}*.stl")
 
+        # Coil is optional, but if specified, check it exists
+        if self.coil_stl:
+            coil_path = self.resolve_path(self.coil_stl)
+            if not coil_path.exists():
+                raise FileNotFoundError(f"Coil STL file not found: {coil_path}")
+
     def resolve_path(self, path: str) -> Path:
         """Resolve a path relative to the config file directory.
 
@@ -154,6 +162,11 @@ class PreprocessorConfig:
     def has_stent(self) -> bool:
         """Check if stent processing is enabled."""
         return bool(self.stent_mesh_base)
+
+    @property
+    def has_coil(self) -> bool:
+        """Check if coil processing is enabled."""
+        return bool(self.coil_stl)
 
     @classmethod
     def load_from_json(cls, config_path: str, cli_overrides: Optional[dict] = None) -> "PreprocessorConfig":
@@ -185,6 +198,7 @@ class PreprocessorConfig:
             'geometry_stl': data.get('geometry_original_stl', ''),
             'centerline_vtp': data.get('centerline_vtp', ''),
             'stent_mesh_base': data.get('stent_mesh_base', ''),
+            'coil_stl': data.get('coil_stl', ''),
             'output_base_name': data.get('output_base_name', 'geometry_'),
             'cut_width': int(data.get('cutWidth', '1')),
             'distance': int(data.get('distance', '4')),

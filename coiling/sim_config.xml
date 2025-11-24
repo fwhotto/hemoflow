@@ -1,16 +1,15 @@
 <simulation>
 	<dt>1e-4</dt>
 	<blockSize>50</blockSize>
-	<outputDir>output</outputDir>
+	<outputDir>output_coil_is_wall</outputDir>
 	<simLength>2.0</simLength>
 	<saveFrequency>0.02</saveFrequency>
 	<checkpointFrequency>0</checkpointFrequency>
 </simulation>
 
 <geometry>
-	<file>/output/geometry_c.npz</file>
+	<file>/input/geometry_w_coil_c.npz</file>
 
-	<!-- Only opening: set as outlet with freeflow -->
 	<opening_0>
 		<name>Inlet</name>
 		<type>1</type>
@@ -20,7 +19,7 @@
 	</opening_0>
 
     <opening_1>
-        <name>Outlet 2 pressure </name>
+        <name>Outlet 1 pressure </name>
         <type>3</type>
         <label>11</label>
         <timeScaleFunction></timeScaleFunction> <!-- Omitting the scale function will create a constant boundary. -->
