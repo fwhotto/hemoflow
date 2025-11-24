@@ -1,0 +1,43 @@
+<simulation>
+	<dt>1e-4</dt>
+	<blockSize>50</blockSize>
+	<outputDir>output</outputDir>
+	<simLength>2.0</simLength>
+	<saveFrequency>0.02</saveFrequency>
+	<checkpointFrequency>0</checkpointFrequency>
+</simulation>
+
+<geometry>
+	<file>/output/geometry_c.npz</file>
+
+	<!-- Only opening: set as outlet with freeflow -->
+	<opening_0>
+		<name>Inlet</name>
+		<type>1</type>
+		<label>10</label>
+		<timeScaleFunction>/input/flowrate.txt</timeScaleFunction>
+		<parameter>0.1</parameter>
+	</opening_0>
+
+    <opening_1>
+        <name>Outlet 2 pressure </name>
+        <type>3</type>
+        <label>11</label>
+        <timeScaleFunction></timeScaleFunction> <!-- Omitting the scale function will create a constant boundary. -->
+        <parameter>0</parameter> <!-- [Pa] -->
+    </opening_1>
+
+    <opening_2>
+        <name>Outlet 2 pressure </name>
+        <type>3</type>
+        <label>12</label>
+        <timeScaleFunction></timeScaleFunction> <!-- Omitting the scale function will create a constant boundary. -->
+        <parameter>0</parameter> <!-- [Pa] -->
+    </opening_2>
+</geometry>
+
+
+<flowdiverter>
+	<linCoeff>0</linCoeff>
+	<quadCoeff>0</quadCoeff>
+</flowdiverter>
