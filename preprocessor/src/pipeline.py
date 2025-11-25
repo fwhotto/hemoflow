@@ -1,438 +1,28 @@
-import sys
-import time
-import numpy as np
-import json
-import os
-import argparse
-import logging
-from dataclasses import dataclass
-from typing import Tuple, List, Optional
-import scipy.interpolate as scpinter
-import vtk
-import slice
-from pathlib import Path
+"""Pipeline orchestration for HemoFlow preprocessor."""
 
-from config import PreprocessorConfig, DebugConfig
-from readCL import getOpeningsFromCenterline, convertToVoxelspace
-from voxelizeStl import voxelize
-from createFluidSolid import createWalls
-from detectOpenings import detectOpenings, paint_inlets_outlets
+import logging
+import time
+from typing import Tuple, List, Optional
+from pathlib import Path
+import numpy as np
+import os
+import scipy.interpolate as scpinter
 from vtk.numpy_interface import dataset_adapter as dsa
 from vtkmodules.vtkIOXML import vtkXMLPolyDataReader
-from vtk.util import numpy_support
-import rotate_geometry
-import mesh_output
 
-# PyVista import for debug visualization
-try:
-    import pyvista as pv
-    PYVISTA_AVAILABLE = True
-except ImportError:
-    PYVISTA_AVAILABLE = False
-    logging.warning("PyVista not available - debug visualizations will be skipped")
-
-
-@dataclass
-class VoxelizationResult:
-    """Result of vessel voxelization stage."""
-    volume: np.ndarray
-    scale: Tuple[float, float, float]
-    shift: Tuple[float, float, float]
-    domain_size: Tuple[int, int, int]
-    bbox: Tuple[float, float, float, float, float, float]
-    dx: float
-
-
-@dataclass
-class OpeningData:
-    """Opening information extracted from centerline."""
-    radius_tangent_list: List[Tuple[float, np.ndarray, np.ndarray]]
-    cut_list: np.ndarray
-
-
-@dataclass
-class GeometryResult:
-    """Final geometry with labeled openings."""
-    volume: np.ndarray
-    opening_index: List[int]
-    opening_radius: List[float]
-    opening_normalized_q_ratio: List[float]
-    opening_center: List[np.ndarray]
-    opening_normal: List[np.ndarray]
-
-
-@dataclass
-class StentResult:
-    """Stent voxelization with resistance coefficients."""
-    volume: np.ndarray
-    linear: np.ndarray
-    quadratic: np.ndarray
-
-
-def setup_logging(level: str = "INFO") -> None:
-    """Configure logging for the preprocessor.
-
-    Args:
-        level: Logging level (DEBUG, INFO, WARNING, ERROR)
-    """
-    numeric_level = getattr(logging, level.upper(), None)
-    if not isinstance(numeric_level, int):
-        raise ValueError(f'Invalid log level: {level}')
-
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(levelname)s: %(message)s'
-    )
-
-
-def visualize_geometry_debug(config: PreprocessorConfig, title: str, **meshes) -> None:
-    """Create interactive PyVista visualization for debugging geometry transformations.
-
-    Args:
-        config: Preprocessor configuration
-        title: Window title describing the current step
-        **meshes: Named meshes to visualize. Can be:
-            - STL file path (str): Loads and displays mesh
-            - PyVista mesh object: Displays directly
-            - NumPy boolean array: Converts voxels to mesh
-            - Tuple (voxel_array, dx, shift): Voxels with spacing
-
-    Example:
-        visualize_geometry_debug(config, "After Rotation",
-                                vessel="vessel_rotated.stl",
-                                coil="coil_rotated.stl")
-    """
-    if not PYVISTA_AVAILABLE:
-        logging.debug(f"Skipping visualization '{title}' - PyVista not available")
-        return
-
-    if not config.debug.enabled:
-        return
-
-    logging.info(f"[DEBUG VIZ] {title}")
-
-    plotter = pv.Plotter()
-    plotter.add_text(title, position='upper_edge', font_size=12, color='black')
-
-    colors = ['red', 'blue', 'green', 'yellow', 'cyan', 'magenta', 'orange', 'purple']
-    color_idx = 0
-
-    for name, data in meshes.items():
-        if data is None:
-            continue
-
-        try:
-            # Handle different data types
-            if isinstance(data, str):
-                # STL file path
-                mesh = pv.read(data)
-                logging.info(f"  {name}: {data} (points: {mesh.n_points})")
-            elif isinstance(data, tuple) and len(data) == 3:
-                # (voxel_array, dx, shift)
-                voxel_array, dx, shift = data
-                if isinstance(voxel_array, np.ndarray) and voxel_array.dtype == bool:
-                    # Create uniform grid from voxels
-                    grid = pv.ImageData(dimensions=voxel_array.shape)
-                    grid.spacing = (dx, dx, dx)
-                    grid.origin = shift
-                    grid.point_data['values'] = voxel_array.flatten(order='F')
-                    # Extract surface
-                    mesh = grid.contour([0.5])
-                    logging.info(f"  {name}: voxel array {voxel_array.shape}, dx={dx}")
-                else:
-                    continue
-            elif isinstance(data, np.ndarray) and data.dtype == bool:
-                # Boolean voxel array without spacing
-                grid = pv.ImageData(dimensions=data.shape)
-                grid.point_data['values'] = data.flatten(order='F')
-                mesh = grid.contour([0.5])
-                logging.info(f"  {name}: voxel array {data.shape}")
-            else:
-                # Assume it's already a PyVista mesh
-                mesh = data
-                logging.info(f"  {name}: mesh object")
-
-            # Add mesh to plotter
-            color = colors[color_idx % len(colors)]
-            plotter.add_mesh(mesh, color=color, opacity=0.7, label=name)
-            color_idx += 1
-
-        except Exception as e:
-            logging.warning(f"  Could not visualize {name}: {e}")
-
-    plotter.add_legend()
-    plotter.add_axes()
-    plotter.show_bounds()
-    plotter.show()
-
-
-def setup_argparse() -> argparse.ArgumentParser:
-    """Set up command-line argument parser.
-
-    Returns:
-        Configured ArgumentParser
-    """
-    parser = argparse.ArgumentParser(
-        description='HemoFlow geometry preprocessor - voxelizes vessel geometry and prepares simulation input',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python main.py config.json
-  python main.py config.json --log-level DEBUG
-  python main.py config.json --debug-outputs fluid_only,geometry
-  python main.py config.json --no-debug --output-dir output/
-        """
-    )
-
-    parser.add_argument(
-        'config',
-        help='Path to JSON configuration file'
-    )
-
-    parser.add_argument(
-        '--log-level',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-        default='INFO',
-        help='Set logging level (default: INFO)'
-    )
-
-    parser.add_argument(
-        '--debug-outputs',
-        help='Comma-separated list of debug outputs to generate: '
-             'fluid_only, wall_fluid, geometry, coil, stent_final, stent_linear, stent_quadratic'
-    )
-
-    parser.add_argument(
-        '--no-debug',
-        action='store_true',
-        help='Disable all debug outputs'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        help='Override output directory from config file'
-    )
-
-    return parser
-
-def inRange(value, rangeValue, distance):
-    if np.abs(rangeValue-value) < distance:
-        return True
-    return False
-
-def inRange3D(value3D, rangeValue3D, distance):
-    isInRange = True
-    for i in range(3):
-        isInRange = (isInRange and inRange(value3D[i], rangeValue3D[i], distance) )
-    
-    return isInRange
-
-def select_face_from_normal(tangent: np.ndarray) -> int:
-    """Select boundary face based on tangent/normal vector.
-
-    The tangent vector points along the centerline (into the vessel at outlets),
-    so we select the face OPPOSITE to the tangent direction.
-
-    Args:
-        tangent: Normalized tangent vector along centerline direction
-
-    Returns:
-        Face index [0-5] -> [X-, X+, Y-, Y+, Z-, Z+]
-    """
-    abs_tangent = np.abs(tangent)
-    dominant_axis = np.argmax(abs_tangent)
-
-    # Tangent points INTO vessel, so opening is on OPPOSITE face
-    # Negative tangent -> opening on positive face, positive tangent -> opening on negative face
-    if tangent[dominant_axis] > 0:
-        return dominant_axis * 2      # X-, Y-, or Z- (opposite of positive tangent)
-    else:
-        return dominant_axis * 2 + 1  # X+, Y+, or Z+ (opposite of negative tangent)
-
-
-def select_closest_face(pos: np.ndarray, domain_size: Tuple[int, int, int]) -> int:
-    """Select boundary face based on closest distance.
-
-    Args:
-        pos: Position in voxel space (x, y, z)
-        domain_size: Domain dimensions (x, y, z)
-
-    Returns:
-        Face index [0-5] -> [X-, X+, Y-, Y+, Z-, Z+]
-    """
-    face_distances = [
-        pos[0],                    # Distance to X- (face 0)
-        domain_size[0] - pos[0],   # Distance to X+ (face 1)
-        pos[1],                    # Distance to Y- (face 2)
-        domain_size[1] - pos[1],   # Distance to Y+ (face 3)
-        pos[2],                    # Distance to Z- (face 4)
-        domain_size[2] - pos[2],   # Distance to Z+ (face 5)
-    ]
-    return int(np.argmin(face_distances))
-
-
-def check_corner_proximity(pos: np.ndarray,
-                           domain_size: Tuple[int, int, int],
-                           threshold: float) -> dict:
-    """Check if opening is near a corner or edge.
-
-    Args:
-        pos: Position in voxel space
-        domain_size: Domain dimensions
-        threshold: Distance threshold for "close to boundary"
-
-    Returns:
-        Dictionary with corner detection info
-    """
-    face_distances = [
-        pos[0], domain_size[0] - pos[0],
-        pos[1], domain_size[1] - pos[1],
-        pos[2], domain_size[2] - pos[2],
-    ]
-    close_faces = [i for i, d in enumerate(face_distances) if d < threshold]
-
-    return {
-        'is_corner': len(close_faces) > 1,
-        'close_faces': close_faces,
-        'num_close': len(close_faces),
-        'min_distance': min(face_distances)
-    }
-
-
-def generateCutList(voxelDomainSize: Tuple[int, int, int],
-                    radiusTangentVoxelList: List,
-                    distance: int,
-                    use_normals: bool = True) -> np.ndarray:
-    """Generate list of domain boundaries to cut for openings.
-
-    Uses tangent vectors to intelligently select ONE face per opening,
-    avoiding corner/edge detection issues.
-
-    Args:
-        voxelDomainSize: Size of voxelized domain (x, y, z)
-        radiusTangentVoxelList: List of (radius, position, tangent) tuples in voxel space
-        distance: Distance threshold for validation
-        use_normals: If True, use tangent vectors; else use closest face
-
-    Returns:
-        Array of boundary indices to cut [0-5] -> [X-, X+, Y-, Y+, Z-, Z+]
-    """
-    sidesToCut = np.zeros(6)
-    face_names = ['X-', 'X+', 'Y-', 'Y+', 'Z-', 'Z+']
-
-    logging.debug(f"Generating cutlist for voxel domain size: {voxelDomainSize}")
-    logging.debug(f"  Using {'normal vectors' if use_normals else 'closest face'} for face selection")
-
-    for idx, o in enumerate(radiusTangentVoxelList):
-        radius, pos, tangent = o
-        logging.info(f"  Opening {idx}: position={pos}, tangent={tangent}, |tangent|={np.linalg.norm(tangent):.3f}")
-
-        # Select face using hybrid method
-        if use_normals and np.linalg.norm(tangent) > 0.1:
-            # Try normal-based selection
-            normal_face = select_face_from_normal(tangent)
-            closest_face = select_closest_face(pos, voxelDomainSize)
-
-            # Calculate distance to normal-selected face
-            axis = normal_face // 2
-            if normal_face % 2 == 0:  # Negative face
-                dist_to_normal_face = pos[axis]
-            else:  # Positive face
-                dist_to_normal_face = voxelDomainSize[axis] - pos[axis]
-
-            # Use normal-based if opening is reasonably close to that face
-            # Otherwise use closest face (more reliable for corner cases)
-            if dist_to_normal_face < distance * 3:
-                selected_face = normal_face
-                method = "normal"
-            else:
-                selected_face = closest_face
-                method = "closest (normal face too far)"
-                logging.debug(
-                    f"  Opening {idx}: Normal suggests face {normal_face} but it's {dist_to_normal_face:.1f} voxels away. "
-                    f"Using closest face {closest_face} instead."
-                )
-        else:
-            selected_face = select_closest_face(pos, voxelDomainSize)
-            method = "closest"
-            if use_normals and np.linalg.norm(tangent) <= 0.1:
-                logging.warning(
-                    f"  Opening {idx}: Tangent vector too small (|tangent|={np.linalg.norm(tangent):.3f}), "
-                    f"falling back to closest face"
-                )
-
-        # Validate opening position
-        corner_info = check_corner_proximity(pos, voxelDomainSize, distance)
-
-        if corner_info['is_corner']:
-            close_face_names = [face_names[i] for i in corner_info['close_faces']]
-            logging.warning(
-                f"  Opening {idx} at {pos} is near corner/edge "
-                f"(close to {corner_info['num_close']} faces: {close_face_names}). "
-                f"Selected face {face_names[selected_face]} using {method} method."
-            )
-
-        # Calculate distance to selected face
-        axis = selected_face // 2
-        if selected_face % 2 == 0:  # Negative face
-            dist_to_face = pos[axis]
-        else:  # Positive face
-            dist_to_face = voxelDomainSize[axis] - pos[axis]
-
-        if dist_to_face > distance * 1.5:
-            logging.warning(
-                f"  Opening {idx} is {dist_to_face:.1f} voxels from selected face {face_names[selected_face]}, "
-                f"but distance threshold is {distance}. Consider increasing distance parameter."
-            )
-
-        sidesToCut[selected_face] = 1
-        logging.debug(f"    -> Selected face: {face_names[selected_face]} (index {selected_face})")
-
-    cut_faces = np.where(sidesToCut == 1)[0]
-    cut_face_names = [face_names[i] for i in cut_faces]
-    logging.info(f"  Faces to cut: {cut_face_names} (indices: {cut_faces})")
-
-    return cut_faces
-
-def scaleAndShiftData(points: List, scale: Tuple, shift: Tuple) -> List:
-    """Transform points from physical space to voxel space.
-
-    Args:
-        points: List of 3D points
-        scale: Scale factors (x, y, z)
-        shift: Shift offsets (x, y, z)
-
-    Returns:
-        Transformed points
-    """
-    for i in range(len(points)):
-        pts = points[i]
-        for j in range(3):
-            pts[j] = (pts[j] + shift[j]) * scale[j]
-        points[i] = pts
-    return points
-
-
-def save_debug_file(config: PreprocessorConfig, name: str, data: np.ndarray) -> None:
-    """Save debug output file if enabled.
-
-    Args:
-        config: Preprocessor configuration
-        name: Debug output name (e.g., 'fluid_only', 'geometry')
-        data: Numpy array to save
-    """
-    if not config.debug.should_save(name):
-        return
-
-    try:
-        import nrrd
-    except ImportError:
-        logging.warning("nrrd module not available, skipping debug output")
-        return
-
-    output_path = config.resolve_path(config.debug.output_dir) / f"{config.output_base_name}{name}.nrrd"
-    logging.debug(f"Saving debug file: {output_path}")
-    nrrd.write(str(output_path), data)
+# Import configuration and models
+from src.config import PreprocessorConfig
+from src.models import VoxelizationResult, OpeningData, GeometryResult, StentResult
+
+# Import processing modules
+from src.voxelization import voxelize
+from src.centerline import getOpeningsFromCenterline, convertToVoxelspace
+from src.wall_creation import createWalls
+from src.opening_detection import detectOpenings, paint_inlets_outlets
+from src.geometry import generateCutList, inRange3D, scaleAndShiftData, get_opening_face
+from src.io_utils import save_debug_file, save_geometry
+import src.rotation as rotate_geometry
+import src.mesh_output as mesh_output
 
 
 def apply_geometry_rotation(config: PreprocessorConfig) -> None:
@@ -475,13 +65,6 @@ def apply_geometry_rotation(config: PreprocessorConfig) -> None:
     logging.info(f"  Inlet centerline index: {config.rotation.inlet_centerline_index}")
     logging.info(f"  Position at boundary: {config.rotation.position_at_boundary}")
 
-    # Debug visualization: Show original geometries
-    # if config.has_coil:
-    #     coil_path = config.resolve_path(config.coil_stl)
-    #     visualize_geometry_debug(config, "Step 1: Original Geometries (Before Rotation)",
-    #                              vessel=str(stl_path),
-    #                              coil=str(coil_path))
-
     # Perform rotation
     rotation_matrix, translation = rotate_geometry.rotate_geometry_to_align_inlet(
         str(stl_path),
@@ -499,11 +82,6 @@ def apply_geometry_rotation(config: PreprocessorConfig) -> None:
 
     logging.info(f"  Rotated STL saved to: {output_stl}")
     logging.info(f"  Rotated VTP saved to: {output_vtp}")
-
-    # Debug visualization: Show vessel after rotation (before coil rotation)
-    # if config.has_coil:
-    #     visualize_geometry_debug(config, "Step 2: After Vessel Rotation (Before Coil Rotation)",
-    #                              vessel_rotated=output_stl)
 
     # Apply same rotation and translation to coil if present
     if config.has_coil:
@@ -526,11 +104,6 @@ def apply_geometry_rotation(config: PreprocessorConfig) -> None:
         # Update config to use rotated coil
         config.coil_stl = output_coil
         logging.info(f"  Rotated coil saved to: {output_coil}")
-
-        # Debug visualization: Show both vessel and coil after rotation/translation
-        # visualize_geometry_debug(config, "Step 3: After Coil Rotation & Translation (Final)",
-        #                          vessel=output_stl,
-        #                          coil=output_coil)
 
     logging.info("="*60)
 
@@ -648,57 +221,6 @@ def create_walls(config: PreprocessorConfig,
     logging.info(f"  Walls: {walls}")
 
     return vol_with_walls, sliced
-
-
-def get_opening_face(center: np.ndarray, volume_shape: Tuple[int, int, int], threshold: float = 2.0) -> Optional[str]:
-    """Determine which boundary face an opening is on.
-
-    Args:
-        center: Opening center coordinates (x, y, z)
-        volume_shape: Shape of volume (nx, ny, nz)
-        threshold: Distance threshold from boundary (in voxels)
-
-    Returns:
-        Face identifier ('X-', 'X+', 'Y-', 'Y+', 'Z-', 'Z+') or None
-    """
-    nx, ny, nz = volume_shape
-    x, y, z = center
-
-    faces = []
-    if x < threshold:
-        faces.append('X-')
-    if x > nx - threshold:
-        faces.append('X+')
-    if y < threshold:
-        faces.append('Y-')
-    if y > ny - threshold:
-        faces.append('Y+')
-    if z < threshold:
-        faces.append('Z-')
-    if z > nz - threshold:
-        faces.append('Z+')
-
-    # Return the closest face if multiple
-    if len(faces) == 1:
-        return faces[0]
-    elif len(faces) > 1:
-        # Calculate distances to each face
-        distances = []
-        for face in faces:
-            if face == 'X-':
-                distances.append(x)
-            elif face == 'X+':
-                distances.append(nx - x)
-            elif face == 'Y-':
-                distances.append(y)
-            elif face == 'Y+':
-                distances.append(ny - y)
-            elif face == 'Z-':
-                distances.append(z)
-            elif face == 'Z+':
-                distances.append(nz - z)
-        return faces[np.argmin(distances)]
-    return None
 
 
 def detect_openings(config: PreprocessorConfig,
@@ -1032,65 +554,15 @@ def process_coil(config: PreprocessorConfig,
     return geometry_volume
 
 
-def save_geometry(config: PreprocessorConfig,
-                  geometry_result: GeometryResult,
-                  voxel_result: VoxelizationResult,
-                  stent_result: Optional[StentResult] = None) -> None:
-    """Save final geometry to compressed NPZ file.
+def run_preprocessing_pipeline(config: PreprocessorConfig) -> None:
+    """Execute the complete preprocessing pipeline.
 
     Args:
         config: Preprocessor configuration
-        geometry_result: Final geometry with openings
-        voxel_result: Voxelization result (for dx)
-        stent_result: Optional stent result
+
+    Raises:
+        Exception: If any pipeline stage fails
     """
-    logging.info("Saving final output")
-
-    output_path = config.resolve_path(config.output_dir) / f"{config.output_base_name}c.npz"
-    logging.info(f"  File: {output_path}")
-
-    # Common data for all outputs
-    common_data = {
-        'geometryFlag': geometry_result.volume,
-        'dx': np.array([voxel_result.dx]).astype(np.double, copy=False),
-        'openingIndex': np.array(geometry_result.opening_index).astype(np.short, copy=False),
-        'openingRadius': np.array(geometry_result.opening_radius).astype(np.double, copy=False),
-        'openingNormalizedQRatio': np.array(geometry_result.opening_normalized_q_ratio).astype(np.double, copy=False),
-        'openingCenter': np.array(geometry_result.opening_center).astype(np.double, copy=False),
-        'openingNormal': np.array(geometry_result.opening_normal).astype(np.double, copy=False),
-    }
-
-    # Add stent data if available
-    if stent_result:
-        common_data['stent'] = stent_result.volume.astype(np.short, copy=False)
-        common_data['linear'] = stent_result.linear.astype(np.int32, copy=False)
-        common_data['quadratic'] = stent_result.quadratic.astype(np.int32, copy=False)
-
-    np.savez_compressed(str(output_path), **common_data)
-
-
-def main() -> None:
-    """Main preprocessing pipeline."""
-    # Parse command-line arguments
-    parser = setup_argparse()
-    args = parser.parse_args()
-
-    # Setup logging
-    setup_logging(args.log_level)
-
-    # Load configuration with CLI overrides
-    cli_overrides = {
-        'output_dir': args.output_dir,
-        'debug_outputs': args.debug_outputs,
-        'no_debug': args.no_debug,
-    }
-
-    try:
-        config = PreprocessorConfig.load_from_json(args.config, cli_overrides)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(f"Configuration error: {e}")
-        sys.exit(1)
-
     logging.info("="*60)
     logging.info("HemoFlow Geometry Preprocessor")
     logging.info("="*60)
@@ -1098,8 +570,6 @@ def main() -> None:
     start_time = time.time()
 
     try:
-        # Pipeline execution
-
         # Step 1: Apply geometry rotation if enabled
         apply_geometry_rotation(config)
 
@@ -1112,21 +582,25 @@ def main() -> None:
         # Step 3: Extract openings from centerline
         opening_data = extract_openings(config, voxel_result)
 
+        # Step 4: Create walls
         wall_volume, sliced = create_walls(config, voxel_result.volume, opening_data.cut_list)
 
+        # Step 5: Detect and label openings
         geometry_result = detect_openings(config, wall_volume, opening_data)
 
+        # Step 6: Process stent if configured
         stent_result = None
         if config.has_stent:
             stent_result = process_stent(config, voxel_result, sliced, opening_data.cut_list)
 
-        # Process coil if configured
+        # Step 7: Process coil if configured
         if config.has_coil:
             geometry_result.volume = process_coil(config, geometry_result, voxel_result,
                                                    sliced, opening_data.cut_list)
             # Save final geometry with coil for visualization
             save_debug_file(config, "geometry_with_coil", geometry_result.volume.astype(np.short, copy=False))
 
+        # Step 8: Save final geometry
         save_geometry(config, geometry_result, voxel_result, stent_result)
 
         # Report completion
@@ -1137,8 +611,4 @@ def main() -> None:
 
     except Exception as e:
         logging.error(f"Preprocessing failed: {e}", exc_info=True)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+        raise
