@@ -21,6 +21,7 @@ from vtk.numpy_interface import dataset_adapter as dsa
 from vtkmodules.vtkIOXML import vtkXMLPolyDataReader
 from vtk.util import numpy_support
 import rotate_geometry
+import mesh_output
 
 # PyVista import for debug visualization
 try:
@@ -1101,6 +1102,9 @@ def main() -> None:
 
         # Step 1: Apply geometry rotation if enabled
         apply_geometry_rotation(config)
+
+        # Step 1.5: Save rescaled meshes in SI units (if enabled)
+        mesh_output.save_rescaled_meshes(config)
 
         # Step 2: Voxelize geometry
         voxel_result = voxelize_geometry(config)

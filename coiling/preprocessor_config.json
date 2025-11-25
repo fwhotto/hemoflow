@@ -7,6 +7,11 @@
   "target_dx": "",
   "output_base_name": "geometry_w_coil_",
   "output_dir": "input/",
+  "output_meshes": {
+    "enabled": true,
+    "vascalature": true,
+    "coil": true
+  },
   "cutWidth": "1",
   "distance": "8",
   "use_normal_for_face_selection": true,

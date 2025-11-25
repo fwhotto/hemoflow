@@ -32,6 +32,20 @@ class DebugConfig:
 
 
 @dataclass
+class OutputMeshesConfig:
+    """Configuration for outputting rescaled surface meshes.
+
+    Attributes:
+        enabled: Whether to output rescaled meshes in SI units
+        vasculature: Whether to output vessel STL file
+        coil: Whether to output coil/stent STL file (when present)
+    """
+    enabled: bool = False
+    vasculature: bool = True
+    coil: bool = True
+
+
+@dataclass
 class RotationConfig:
     """Configuration for geometry rotation preprocessing.
 
@@ -79,6 +93,7 @@ class PreprocessorConfig:
         inhomogen: Use inhomogeneous stent resistance (default: False)
         use_normal_for_face_selection: Use tangent vectors to select boundary faces (default: True)
         rotation: Rotation configuration for aligning inlet with bounding box
+        output_meshes: Configuration for outputting rescaled surface meshes
         debug: Debug configuration
         config_dir: Directory containing the config file (for resolving relative paths)
     """
@@ -96,6 +111,7 @@ class PreprocessorConfig:
     inhomogen: bool = False
     use_normal_for_face_selection: bool = False
     rotation: RotationConfig = field(default_factory=RotationConfig)
+    output_meshes: OutputMeshesConfig = field(default_factory=OutputMeshesConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     config_dir: str = "."
 
@@ -236,6 +252,17 @@ class PreprocessorConfig:
             if 'position_at_boundary' in rotation_data:
                 rotation_config.position_at_boundary = bool(rotation_data['position_at_boundary'])
         config_kwargs['rotation'] = rotation_config
+
+        # Handle output_meshes configuration
+        output_meshes_config = OutputMeshesConfig()
+        if 'output_meshes' in data:
+            mesh_data = data['output_meshes']
+            output_meshes_config.enabled = mesh_data.get('enabled', False)
+            if 'vasculature' in mesh_data:
+                output_meshes_config.vasculature = bool(mesh_data['vasculature'])
+            if 'coil' in mesh_data:
+                output_meshes_config.coil = bool(mesh_data['coil'])
+        config_kwargs['output_meshes'] = output_meshes_config
 
         # Handle debug configuration
         debug_config = DebugConfig()
