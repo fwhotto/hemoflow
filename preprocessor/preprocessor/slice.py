@@ -3,8 +3,8 @@ import itertools
 
 import numpy as np
 
-import src.perimeter as perimeter
-from src.util import manhattanDistance, removeDupsFromPointList
+from . import perimeter
+from .util import manhattanDistance, removeDupsFromPointList
 
 def toIntersectingLines(mesh, height):
     relevantTriangles = list(filter(lambda tri: isAboveAndBelow(tri, height), mesh))

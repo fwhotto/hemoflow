@@ -6,8 +6,8 @@ from typing import Optional
 import numpy as np
 
 # Type imports
-from src.config import PreprocessorConfig
-from src.models import VoxelizationResult, GeometryResult, StentResult
+from .config import PreprocessorConfig
+from .models import VoxelizationResult, GeometryResult, StentResult
 
 # PyVista import for debug visualization
 try:

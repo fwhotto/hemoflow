@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from src.models import (
+from preprocessor.models import (
     VoxelizationResult,
     OpeningData,
     GeometryResult,

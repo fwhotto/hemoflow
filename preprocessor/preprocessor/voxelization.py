@@ -2,10 +2,10 @@
 # import sys
 import numpy as np
 
-import src.slice as slice
-import src.perimeter as perimeter
+from . import slice
+from . import perimeter
 # import multiprocessing
-from src.util import padVoxelArray
+from .util import padVoxelArray
 
 from stl import mesh
 

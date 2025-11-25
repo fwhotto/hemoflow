@@ -1,8 +1,7 @@
 """Tests for geometry utility functions."""
 
 import numpy as np
-import pytest
-from src.geometry import (
+from preprocessor.geometry import (
     inRange,
     inRange3D,
     select_face_from_normal,

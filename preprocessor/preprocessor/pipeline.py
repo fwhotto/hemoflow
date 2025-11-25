@@ -11,18 +11,18 @@ from vtk.numpy_interface import dataset_adapter as dsa
 from vtkmodules.vtkIOXML import vtkXMLPolyDataReader
 
 # Import configuration and models
-from src.config import PreprocessorConfig
-from src.models import VoxelizationResult, OpeningData, GeometryResult, StentResult
+from .config import PreprocessorConfig
+from .models import VoxelizationResult, OpeningData, GeometryResult, StentResult
 
 # Import processing modules
-from src.voxelization import voxelize
-from src.centerline import getOpeningsFromCenterline, convertToVoxelspace
-from src.wall_creation import createWalls
-from src.opening_detection import detectOpenings, paint_inlets_outlets
-from src.geometry import generateCutList, inRange3D, scaleAndShiftData, get_opening_face
-from src.io_utils import save_debug_file, save_geometry
-import src.rotation as rotate_geometry
-import src.mesh_output as mesh_output
+from .voxelization import voxelize
+from .centerline import getOpeningsFromCenterline, convertToVoxelspace
+from .wall_creation import createWalls
+from .opening_detection import detectOpenings, paint_inlets_outlets
+from .geometry import generateCutList, inRange3D, scaleAndShiftData, get_opening_face
+from .io_utils import save_debug_file, save_geometry
+from . import rotation as rotate_geometry
+from . import mesh_output
 
 
 def apply_geometry_rotation(config: PreprocessorConfig) -> None:

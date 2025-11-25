@@ -1,11 +1,9 @@
 """Entry point for running preprocessor as a module."""
 import argparse
-import logging
-import sys
 
-from src.config import PreprocessorConfig
-from src.io_utils import setup_logging
-from src.pipeline import run_preprocessing_pipeline
+from .config import PreprocessorConfig
+from .io_utils import setup_logging
+from .pipeline import run_preprocessing_pipeline
 
 
 def main() -> None:

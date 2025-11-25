@@ -1,6 +1,6 @@
 import sys
 import numpy as np
-from src.constants import const
+from .constants import const
 # from operator import itemgetter
 
 CONSTANTS = const()

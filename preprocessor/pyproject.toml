@@ -23,11 +23,11 @@ dev = [
 ]
 
 [project.scripts]
-preprocessor = "src.__main__:main"
+preprocessor = "preprocessor.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["preprocessor*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
