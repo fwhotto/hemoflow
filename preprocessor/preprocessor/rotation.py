@@ -363,23 +363,23 @@ def rotate_geometry_to_align_inlet(
 
     # Parse target axis - this specifies which BOUNDARY FACE the inlet should be on
     boundary_face_vector = parse_target_axis(target_axis)
-    logger.info(f"Target boundary face: {target_axis} -> {boundary_face_vector}")
+    logger.debug(f"Target boundary face: {target_axis} -> {boundary_face_vector}")
 
     # The inlet normal should point INTO the domain, which is OPPOSITE to the boundary face
     # E.g., if inlet is on -X face (minimum X), normal should point in +X direction (into domain)
     target_normal_direction = -boundary_face_vector
-    logger.info(f"Target inlet normal direction (into domain): {target_normal_direction}")
+    logger.debug(f"Target inlet normal direction (into domain): {target_normal_direction}")
 
     # Get inlet position and normal from centerline
     inlet_pos, inlet_normal = get_centerline_opening(centerline_path, inlet_index)
-    logger.info(f"Inlet position: {inlet_pos}")
-    logger.info(f"Inlet normal (from centerline): {inlet_normal}")
+    logger.debug(f"Inlet position: {inlet_pos}")
+    logger.debug(f"Inlet normal (from centerline): {inlet_normal}")
 
     # Calculate rotation matrix to align inlet normal with target direction
     # inlet_normal points INTO vessel, -inlet_normal points OUT of vessel (into domain)
     # We want to align this with target_normal_direction (into domain)
     rotation_matrix = calculate_rotation_matrix(-inlet_normal, target_normal_direction)
-    logger.info(f"Rotation matrix:\n{rotation_matrix}")
+    logger.debug(f"Rotation matrix:\n{rotation_matrix}")
 
     # Rotate STL and centerline
     temp_stl = str(Path(output_stl).with_suffix('.temp.stl'))
@@ -393,11 +393,11 @@ def rotate_geometry_to_align_inlet(
     if position_at_boundary:
         # Get rotated inlet position
         rotated_inlet_pos = np.dot(rotation_matrix, inlet_pos)
-        logger.info(f"Rotated inlet position: {rotated_inlet_pos}")
+        logger.debug(f"Rotated inlet position: {rotated_inlet_pos}")
 
         # Get bounds of rotated geometry
         min_coords, max_coords = get_stl_bounds(temp_stl)
-        logger.info(f"Rotated geometry bounds: min={min_coords}, max={max_coords}")
+        logger.debug(f"Rotated geometry bounds: min={min_coords}, max={max_coords}")
 
         # Determine which boundary face to align to based on boundary face vector
         axis_idx = np.argmax(np.abs(boundary_face_vector))
@@ -411,7 +411,7 @@ def rotate_geometry_to_align_inlet(
 
         # Calculate translation to move inlet to boundary
         translation[axis_idx] = target_coord - rotated_inlet_pos[axis_idx]
-        logger.info(f"Translation vector: {translation}")
+        logger.debug(f"Translation vector: {translation}")
 
         # Apply translation
         translate_stl(temp_stl, translation, output_stl)

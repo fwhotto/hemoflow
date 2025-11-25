@@ -21,6 +21,8 @@ Short description:
 """
 
 import numpy as np
+import logging
+logger = logging.getLogger(__name__)
 
 def roll_zeropad(a, shift, axis=None):
     """
@@ -77,12 +79,12 @@ def roll_zeropad(a, shift, axis=None):
 
 def removeUnusedOuterLayers(data):
 
-    print("Removing unused outer layers...")
+    logger.info("Removing unused outer layers...")
 
     x,y,z = data.shape
     sliced = np.array([0,x,0,y,0,z])
 
-    print("Original bounds:", sliced)
+    logger.info("Original bounds:", sliced)
 
     while(np.max(data[sliced[0],:,:]) == 0):
         sliced[0] = sliced[0]+1
@@ -110,7 +112,7 @@ def removeUnusedOuterLayers(data):
 
     data = data[sliced[0]:sliced[1],sliced[2]:sliced[3],sliced[4]:sliced[5]]
 
-    print("Bounds after removing unused layers:", sliced)
+    logger.info("Bounds after removing unused layers:", sliced)
 
     return data, sliced
 
@@ -124,7 +126,7 @@ def createWalls(inputArray, cutList, cutWidth = 1):
     #Create a cpoy
     data2 = np.copy(data1)
 
-    print("Calculating boundary...")
+    logger.info("Calculating boundary...")
     
     #Circular bool shift to paint walls
     for l in range(-1,2):

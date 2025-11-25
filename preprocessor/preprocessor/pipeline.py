@@ -569,46 +569,42 @@ def run_preprocessing_pipeline(config: PreprocessorConfig) -> None:
 
     start_time = time.time()
 
-    try:
-        # Step 1: Apply geometry rotation if enabled
-        apply_geometry_rotation(config)
+    # Step 1: Apply geometry rotation if enabled
+    apply_geometry_rotation(config)
 
-        # Step 1.5: Save rescaled meshes in SI units (if enabled)
-        mesh_output.save_rescaled_meshes(config)
+    # Step 1.5: Save rescaled meshes in SI units (if enabled)
+    mesh_output.save_rescaled_meshes(config)
 
-        # Step 2: Voxelize geometry
-        voxel_result = voxelize_geometry(config)
+    # Step 2: Voxelize geometry
+    voxel_result = voxelize_geometry(config)
 
-        # Step 3: Extract openings from centerline
-        opening_data = extract_openings(config, voxel_result)
+    # Step 3: Extract openings from centerline
+    opening_data = extract_openings(config, voxel_result)
 
-        # Step 4: Create walls
-        wall_volume, sliced = create_walls(config, voxel_result.volume, opening_data.cut_list)
+    # Step 4: Create walls
+    wall_volume, sliced = create_walls(config, voxel_result.volume, opening_data.cut_list)
 
-        # Step 5: Detect and label openings
-        geometry_result = detect_openings(config, wall_volume, opening_data)
+    # Step 5: Detect and label openings
+    geometry_result = detect_openings(config, wall_volume, opening_data)
 
-        # Step 6: Process stent if configured
-        stent_result = None
-        if config.has_stent:
-            stent_result = process_stent(config, voxel_result, sliced, opening_data.cut_list)
+    # Step 6: Process stent if configured
+    stent_result = None
+    if config.has_stent:
+        stent_result = process_stent(config, voxel_result, sliced, opening_data.cut_list)
 
-        # Step 7: Process coil if configured
-        if config.has_coil:
-            geometry_result.volume = process_coil(config, geometry_result, voxel_result,
-                                                   sliced, opening_data.cut_list)
-            # Save final geometry with coil for visualization
-            save_debug_file(config, "geometry_with_coil", geometry_result.volume.astype(np.short, copy=False))
+    # Step 7: Process coil if configured
+    if config.has_coil:
+        geometry_result.volume = process_coil(config, geometry_result, voxel_result,
+                                               sliced, opening_data.cut_list)
+        # Save final geometry with coil for visualization
+        save_debug_file(config, "geometry_with_coil", geometry_result.volume.astype(np.short, copy=False))
 
-        # Step 8: Save final geometry
-        save_geometry(config, geometry_result, voxel_result, stent_result)
+    # Step 8: Save final geometry
+    save_geometry(config, geometry_result, voxel_result, stent_result)
 
-        # Report completion
-        elapsed = int(round(time.time() - start_time))
-        logging.info("="*60)
-        logging.info(f"Preprocessing completed successfully in {elapsed}s")
-        logging.info("="*60)
+    # Report completion
+    elapsed = int(round(time.time() - start_time))
+    logging.info("="*60)
+    logging.info(f"Preprocessing completed successfully in {elapsed}s")
+    logging.info("="*60)
 
-    except Exception as e:
-        logging.error(f"Preprocessing failed: {e}", exc_info=True)
-        raise

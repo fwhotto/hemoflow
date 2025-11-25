@@ -1,7 +1,9 @@
 import sys
 import numpy as np
 from .constants import const
-# from operator import itemgetter
+
+import logging
+logger = logging.getLogger(__name__)
 
 CONSTANTS = const()
 
@@ -55,7 +57,7 @@ def find_inlet_outlet(x, y, z, data, plane):
     inlet_outlet += recur_find_inlet_outlet(x, y, z, None, None, None, [], data, plane)
     
     if len(inlet_outlet) > 1:
-        print(" -> Found opening of size:", len(inlet_outlet))
+        logger.debug(" -> Found opening of size:", len(inlet_outlet))
         return inlet_outlet
 
     return None
@@ -107,8 +109,7 @@ def detect_inlets_outlets(data):
         - All outlets are smaller in diameter than the inlets.
         - The inlets and outlets are cut parallel to the x, y or z plane.
     """
-    print("Detecting all fluid voxels surrounded by an unused voxel...")
-    #print(len(data) * len(data[0]) * len(data[0][0]))
+    logger.info("Detecting all fluid voxels surrounded by an unused voxel...")
     wall_voxels = zip(*np.where(data == CONSTANTS.WALL_VOXEL))
     found_fluid_voxels = list(get_all_inlet_outlet_fluid_voxels(wall_voxels, data))
     # voxel_count = len(found_fluid_voxels)
@@ -147,9 +148,9 @@ def paint_inlets_outlets(inlets_outlets, data, findBoundaryByArea=True):
     openingIdx[inletIdx] = CONSTANTS.INLET_VOXEL
     openingIdx[pressureOutletIdx] = CONSTANTS.OUTLET_VOXEL
 
-    print("Number of inlets: 1")
-    print("Number of pressure outlets: 1")
-    print("Number of velocity outlet(s): ", numOpenings-2)
+    logger.info("Number of inlets: 1")
+    logger.info("Number of pressure outlets: 1")
+    logger.info("Number of velocity outlet(s): ", numOpenings-2)
     
     outletCount = 0
     for i in range(numOpenings):
@@ -203,4 +204,4 @@ if __name__ == "__main__":
 
     endTime = time.time()
     timeElapsed = int(round((endTime - startTime) * 1000))
-    print("Elapsed time:", timeElapsed, "[ms]")
+    logger.info("Elapsed time:", timeElapsed, "[ms]")
