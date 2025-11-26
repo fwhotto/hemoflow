@@ -1,6 +1,8 @@
 # import os.path
 # import sys
+import logging
 import numpy as np
+from typing import Tuple
 
 from . import slice
 from . import perimeter
@@ -87,6 +89,43 @@ def import_stl_file(inputFile):
 def get_stl_faces(mesh):
     for i, j, k in zip(mesh.v0, mesh.v1, mesh.v2):
         yield (tuple(i), tuple(j), tuple(k))
+
+
+def voxelize_with_three_projections(
+    stl_file: str,
+    target_elements: int,
+    domain_data: Tuple,
+    geometry_name: str = "geometry"
+) -> np.ndarray:
+    """Voxelize geometry using 3 orthogonal projections with logical OR merge.
+
+    This method improves coverage for thin structures by voxelizing from
+    three different orientations and merging the results.
+
+    Args:
+        stl_file: Path to STL file
+        target_elements: Target number of voxel elements
+        domain_data: Tuple of (scale, shift, domain_size, bbox)
+        geometry_name: Name for logging (e.g., "flow diverter", "coil")
+
+    Returns:
+        Merged boolean volume from 3 projections
+    """
+    logging.info(f"  Voxelizing {geometry_name} from 3 projections")
+
+    logging.info("    Projection #1 (default)")
+    vol1, _ = voxelize(stl_file, target_elements, True, domain_data)
+
+    logging.info("    Projection #2 (rotation 0)")
+    vol2, _ = voxelize(stl_file, target_elements, True, domain_data, 0)
+
+    logging.info("    Projection #3 (rotation 1)")
+    vol3, _ = voxelize(stl_file, target_elements, True, domain_data, 1)
+
+    logging.info("    Merging projections")
+    merged = np.logical_or(np.logical_or(vol1, vol2), vol3)
+
+    return merged
 
 
 if __name__ == '__main__':

@@ -7,7 +7,8 @@ from preprocessor.geometry import (
     select_face_from_normal,
     select_closest_face,
     check_corner_proximity,
-    scaleAndShiftData
+    scaleAndShiftData,
+    apply_boundary_cuts
 )
 
 
@@ -107,3 +108,113 @@ class TestScaleAndShiftData:
         result = scaleAndShiftData(points, scale, shift)
         expected = [[4.0, 6.0, 8.0], [10.0, 12.0, 14.0]]
         np.testing.assert_array_almost_equal(result, expected)
+
+
+class TestApplyBoundaryCuts:
+    """Tests for apply_boundary_cuts function."""
+
+    def test_no_cuts(self):
+        """Test with empty cut list - should return copy of original."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (10, 10, 10)
+        np.testing.assert_array_equal(result, volume)
+
+    def test_cut_face_0_x_minus(self):
+        """Test cutting X- face (face 0)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([0])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (9, 10, 10)
+
+    def test_cut_face_1_x_plus(self):
+        """Test cutting X+ face (face 1)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([1])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (9, 10, 10)
+
+    def test_cut_face_2_y_minus(self):
+        """Test cutting Y- face (face 2)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([2])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (10, 9, 10)
+
+    def test_cut_face_3_y_plus(self):
+        """Test cutting Y+ face (face 3)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([3])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (10, 9, 10)
+
+    def test_cut_face_4_z_minus(self):
+        """Test cutting Z- face (face 4)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([4])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (10, 10, 9)
+
+    def test_cut_face_5_z_plus(self):
+        """Test cutting Z+ face (face 5)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([5])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (10, 10, 9)
+
+    def test_cut_multiple_faces(self):
+        """Test cutting multiple faces simultaneously."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([0, 2, 4])  # X-, Y-, Z-
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (9, 9, 9)
+
+    def test_cut_all_faces(self):
+        """Test cutting all 6 faces."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([0, 1, 2, 3, 4, 5])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+        assert result.shape == (8, 8, 8)
+
+    def test_cut_width_2(self):
+        """Test with cut_width=2."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([0])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=2)
+        assert result.shape == (8, 10, 10)
+
+    def test_cut_width_3(self):
+        """Test with cut_width=3."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        cut_list = np.array([0, 1])  # Both X faces
+        result = apply_boundary_cuts(volume, cut_list, cut_width=3)
+        assert result.shape == (4, 10, 10)
+
+    def test_sequential_cutting_order(self):
+        """Test that cuts are applied sequentially (shape changes affect subsequent cuts)."""
+        # Create volume with unique values to track what's removed
+        volume = np.arange(1000).reshape((10, 10, 10))
+        cut_list = np.array([0, 1])  # Cut X- then X+
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+
+        # After cutting X- (remove first slice), then X+ (remove last slice of remaining)
+        # Final shape should be (8, 10, 10)
+        assert result.shape == (8, 10, 10)
+
+        # Verify the correct slices remain
+        # X- cut removes slice 0, X+ cut removes last slice of what's left
+        # So we should have original slices 1-8
+        expected = volume[1:9, :, :]
+        np.testing.assert_array_equal(result, expected)
+
+    def test_original_volume_unchanged(self):
+        """Test that original volume is not modified (function creates copy)."""
+        volume = np.ones((10, 10, 10), dtype=int)
+        original_shape = volume.shape
+        cut_list = np.array([0, 1, 2, 3, 4, 5])
+        result = apply_boundary_cuts(volume, cut_list, cut_width=1)
+
+        # Original should be unchanged
+        assert volume.shape == original_shape
+        assert result.shape != volume.shape

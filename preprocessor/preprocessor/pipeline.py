@@ -16,11 +16,11 @@ from .constants import VoxelLabels
 from .models import VoxelizationResult, OpeningData, GeometryResult, StentResult
 
 # Import processing modules
-from .voxelization import voxelize
+from .voxelization import voxelize, voxelize_with_three_projections
 from .centerline import getOpeningsFromCenterline, convertToVoxelspace
 from .wall_creation import createWalls
 from .opening_detection import detectOpenings, paint_inlets_outlets
-from .geometry import generateCutList, inRange3D, scaleAndShiftData, get_opening_face
+from .geometry import generateCutList, inRange3D, scaleAndShiftData, get_opening_face, apply_boundary_cuts
 from .io_utils import save_debug_file, save_geometry
 from . import rotation as rotate_geometry
 from . import mesh_output
@@ -224,6 +224,86 @@ def create_walls(config: PreprocessorConfig,
     return vol_with_walls, sliced
 
 
+def _calculate_murray_flow_ratios(radius_tangent_list: List) -> List[float]:
+    """Calculate Murray's law flow ratios (Q ∝ r³) for outlets.
+
+    Murray's law states that flow through vessels is proportional to the
+    cube of their radius. This function calculates normalized flow ratios
+    for all outlets (skipping the first opening, which is the inlet).
+
+    Args:
+        radius_tangent_list: List of (radius, pos, tangent) tuples
+
+    Returns:
+        List of normalized flow ratios for each opening
+    """
+    # Sum of r³ for all outlets (skip first opening = inlet)
+    r3_tot = np.sum([x[0]**3 for x in radius_tangent_list[1:]])
+
+    # Calculate ratio for each opening
+    return [r[0]**3 / r3_tot for r in radius_tangent_list]
+
+
+def _reorder_openings_for_rotation(
+    config: PreprocessorConfig,
+    volume_shape: Tuple,
+    opening_center: List,
+    opening_radius: List,
+    opening_normalized_q_ratio: List,
+    opening_normal: List,
+    inlets_outlets_sorted: List
+) -> Optional[int]:
+    """Reorder openings to place inlet first when rotation is enabled.
+
+    When geometry rotation is applied, the inlet is positioned on a specific
+    boundary face. This function identifies which opening is on that target
+    face and reorders all opening data to place it first.
+
+    Args:
+        config: Preprocessor configuration with rotation settings
+        volume_shape: Shape of the volume (for face detection)
+        opening_center: List of opening centers (modified in-place)
+        opening_radius: List of opening radii (modified in-place)
+        opening_normalized_q_ratio: List of flow ratios (modified in-place)
+        opening_normal: List of opening normals (modified in-place)
+        inlets_outlets_sorted: List of inlet/outlet voxels (modified in-place)
+
+    Returns:
+        Index of inlet opening, or None if not found
+    """
+    # Map target axis to face identifier
+    axis_to_face_map = {
+        '-x': 'X-', '+x': 'X+',
+        '-y': 'Y-', '+y': 'Y+',
+        '-z': 'Z-', '+z': 'Z+'
+    }
+    target_face = axis_to_face_map.get(config.rotation.inlet_target_axis.lower())
+
+    if not target_face:
+        return None
+
+    # Find which opening is on the target inlet face
+    inlet_idx = None
+    for i, center in enumerate(opening_center):
+        face = get_opening_face(center, volume_shape, threshold=5.0)
+        logging.info(f"  Opening {i}: center={center}, face={face}, radius={opening_radius[i]:.6f}m")
+        if face == target_face:
+            inlet_idx = i
+            logging.info(f"  → Identified as INLET (on target face {target_face})")
+
+    # Reorder to put inlet first
+    if inlet_idx is not None and inlet_idx != 0:
+        logging.info(f"  Reordering: moving opening {inlet_idx} to position 0 (inlet)")
+        # Swap inlet to first position in all lists
+        for lst in [opening_radius, opening_normalized_q_ratio, opening_center,
+                   opening_normal, inlets_outlets_sorted]:
+            lst[0], lst[inlet_idx] = lst[inlet_idx], lst[0]
+    elif inlet_idx is None:
+        logging.warning(f"  Could not find opening on target inlet face {target_face}")
+
+    return inlet_idx
+
+
 def detect_openings(config: PreprocessorConfig,
                     volume: np.ndarray,
                     opening_data: OpeningData) -> GeometryResult:
@@ -267,8 +347,8 @@ def detect_openings(config: PreprocessorConfig,
     inlets_outlets_sorted = []
     opening_normal = []
 
-    # Calculate Murray's law flow ratios (Q ∝ r³)
-    r3_tot = np.sum([x[0]**3 for x in opening_data.radius_tangent_list[1:]])
+    # Calculate Murray's law flow ratios (Q ∝ r³) for all openings
+    flow_ratios = _calculate_murray_flow_ratios(opening_data.radius_tangent_list)
 
     for ccCL in range(len(opening_data.radius_tangent_list)):
         for ccVox in range(len(opening_centers)):
@@ -278,40 +358,17 @@ def detect_openings(config: PreprocessorConfig,
 
             if inRange3D(cVox, (cCL[0], cCL[1], cCL[2]), config.distance):
                 opening_radius.append(rCL[0] * config.si_factor)
-                opening_normalized_q_ratio.append(rCL[0]**3 / r3_tot)
+                opening_normalized_q_ratio.append(flow_ratios[ccCL])
                 opening_center.append(cVox)
                 opening_normal.append(np.array((rCL[2][0], rCL[2][1], rCL[2][2])))
                 inlets_outlets_sorted.append(inlet_outlets[ccVox])
 
     # If rotation was applied, reorder openings to put the inlet first based on target face
     if config.rotation.enabled:
-        # Map target axis to face identifier
-        axis_to_face_map = {
-            '-x': 'X-', '+x': 'X+',
-            '-y': 'Y-', '+y': 'Y+',
-            '-z': 'Z-', '+z': 'Z+'
-        }
-        target_face = axis_to_face_map.get(config.rotation.inlet_target_axis.lower())
-
-        if target_face:
-            # Find which opening is on the target inlet face
-            inlet_idx = None
-            for i, center in enumerate(opening_center):
-                face = get_opening_face(center, volume.shape, threshold=5.0)
-                logging.info(f"  Opening {i}: center={center}, face={face}, radius={opening_radius[i]:.6f}m")
-                if face == target_face:
-                    inlet_idx = i
-                    logging.info(f"  → Identified as INLET (on target face {target_face})")
-
-            # Reorder to put inlet first
-            if inlet_idx is not None and inlet_idx != 0:
-                logging.info(f"  Reordering: moving opening {inlet_idx} to position 0 (inlet)")
-                # Swap inlet to first position
-                for lst in [opening_radius, opening_normalized_q_ratio, opening_center,
-                           opening_normal, inlets_outlets_sorted]:
-                    lst[0], lst[inlet_idx] = lst[inlet_idx], lst[0]
-            elif inlet_idx is None:
-                logging.warning(f"  Could not find opening on target inlet face {target_face}")
+        _reorder_openings_for_rotation(
+            config, volume.shape, opening_center, opening_radius,
+            opening_normalized_q_ratio, opening_normal, inlets_outlets_sorted
+        )
 
     opening_index, opening_centers_final, painted_openings = paint_inlets_outlets(
         inlets_outlets_sorted,
@@ -360,17 +417,12 @@ def process_stent(config: PreprocessorConfig,
     domain_data = (voxel_result.scale, voxel_result.shift, voxel_result.domain_size, voxel_result.bbox)
 
     # Voxelize from 3 different projections
-    logging.info("  Projection #1")
-    voxelStent, _ = voxelize(stent_geom_file, config.target_elements, True, domain_data)
-
-    logging.info("  Projection #2")
-    voxelStent2, _ = voxelize(stent_geom_file, config.target_elements, True, domain_data, 0)
-
-    logging.info("  Projection #3")
-    voxelStent3, _ = voxelize(stent_geom_file, config.target_elements, True, domain_data, 1)
+    sdomain_full = voxelize_with_three_projections(
+        stent_geom_file, config.target_elements, domain_data, "flow diverter"
+    )
 
     logging.info("  Processing stent interpolation")
-    xg, yg, zg = np.mgrid[0:voxelStent3.shape[0], 0:voxelStent3.shape[1], 0:voxelStent3.shape[2]]
+    xg, yg, zg = np.mgrid[0:sdomain_full.shape[0], 0:sdomain_full.shape[1], 0:sdomain_full.shape[2]]
 
     stent_voxel_linear = 1
     stent_voxel_quadratic = 1
@@ -397,9 +449,7 @@ def process_stent(config: PreprocessorConfig,
         else:
             logging.warning(f"  Inhomogeneous resistance file not found: {values_file}")
 
-    # Merge projections
-    logging.info("  Merging projections")
-    sdomain_full = np.logical_or(np.logical_or(voxelStent, voxelStent2), voxelStent3)
+    # Apply resistance coefficients to voxelized domain
     linear = stent_voxel_linear * sdomain_full
     quadratic = stent_voxel_quadratic * sdomain_full
 
@@ -408,31 +458,10 @@ def process_stent(config: PreprocessorConfig,
     linear_full = linear[sliced[0]:sliced[1], sliced[2]:sliced[3], sliced[4]:sliced[5]]
     quadratic_full = quadratic[sliced[0]:sliced[1], sliced[2]:sliced[3], sliced[4]:sliced[5]]
 
-    # Apply cutting for openings
-    if 0 in cut_list:
-        sdomain_full = sdomain_full[config.cut_width:, :, :]
-        linear_full = linear_full[config.cut_width:, :, :]
-        quadratic_full = quadratic_full[config.cut_width:, :, :]
-    if 1 in cut_list:
-        sdomain_full = sdomain_full[:-config.cut_width, :, :]
-        linear_full = linear_full[:-config.cut_width, :, :]
-        quadratic_full = quadratic_full[:-config.cut_width, :, :]
-    if 2 in cut_list:
-        sdomain_full = sdomain_full[:, config.cut_width:, :]
-        linear_full = linear_full[:, config.cut_width:, :]
-        quadratic_full = quadratic_full[:, config.cut_width:, :]
-    if 3 in cut_list:
-        sdomain_full = sdomain_full[:, :-config.cut_width, :]
-        linear_full = linear_full[:, :-config.cut_width, :]
-        quadratic_full = quadratic_full[:, :-config.cut_width, :]
-    if 4 in cut_list:
-        sdomain_full = sdomain_full[:, :, config.cut_width:]
-        linear_full = linear_full[:, :, config.cut_width:]
-        quadratic_full = quadratic_full[:, :, config.cut_width:]
-    if 5 in cut_list:
-        sdomain_full = sdomain_full[:, :, :-config.cut_width]
-        linear_full = linear_full[:, :, :-config.cut_width]
-        quadratic_full = quadratic_full[:, :, :-config.cut_width]
+    # Apply boundary cuts for openings
+    sdomain_full = apply_boundary_cuts(sdomain_full, cut_list, config.cut_width)
+    linear_full = apply_boundary_cuts(linear_full, cut_list, config.cut_width)
+    quadratic_full = apply_boundary_cuts(quadratic_full, cut_list, config.cut_width)
 
     logging.info(f"  Linear coefficients range: [{np.nanmin(linear_full)}, {np.nanmax(linear_full)}]")
     logging.info(f"  Quadratic coefficients range: [{np.nanmin(quadratic_full)}, {np.nanmax(quadratic_full)}]")
@@ -472,49 +501,19 @@ def process_coil(config: PreprocessorConfig,
     domain_data = (voxel_result.scale, voxel_result.shift, voxel_result.domain_size, voxel_result.bbox)
 
     # Voxelize from 3 different projections
-    logging.info("  Projection #1")
-    voxelCoil1, _ = voxelize(coil_stl, config.target_elements, True, domain_data)
-    logging.info(f"    Shape: {voxelCoil1.shape}, Voxels: {np.count_nonzero(voxelCoil1)}")
-
-    logging.info("  Projection #2")
-    voxelCoil2, _ = voxelize(coil_stl, config.target_elements, True, domain_data, 0)
-    logging.info(f"    Shape: {voxelCoil2.shape}, Voxels: {np.count_nonzero(voxelCoil2)}")
-
-    logging.info("  Projection #3")
-    voxelCoil3, _ = voxelize(coil_stl, config.target_elements, True, domain_data, 1)
-    logging.info(f"    Shape: {voxelCoil3.shape}, Voxels: {np.count_nonzero(voxelCoil3)}")
-
-    # Merge projections
-    logging.info("  Merging projections")
-    coil_domain = np.logical_or(np.logical_or(voxelCoil1, voxelCoil2), voxelCoil3)
-    logging.info(f"    Merged shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
+    coil_domain = voxelize_with_three_projections(
+        coil_stl, config.target_elements, domain_data, "coil"
+    )
+    logging.info(f"  Merged coil shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
 
     # Apply slicing
     logging.info(f"  Slicing indices: {sliced}")
     coil_domain = coil_domain[sliced[0]:sliced[1], sliced[2]:sliced[3], sliced[4]:sliced[5]]
     logging.info(f"    After slicing shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
 
-    # Apply cutting for openings
-    logging.info(f"  Cutting for openings (cut_list: {cut_list})")
-    if 0 in cut_list:
-        coil_domain = coil_domain[config.cut_width:, :, :]
-        logging.info(f"    Cut face 0 (X-), shape: {coil_domain.shape}")
-    if 1 in cut_list:
-        coil_domain = coil_domain[:-config.cut_width, :, :]
-        logging.info(f"    Cut face 1 (X+), shape: {coil_domain.shape}")
-    if 2 in cut_list:
-        coil_domain = coil_domain[:, config.cut_width:, :]
-        logging.info(f"    Cut face 2 (Y-), shape: {coil_domain.shape}")
-    if 3 in cut_list:
-        coil_domain = coil_domain[:, :-config.cut_width, :]
-        logging.info(f"    Cut face 3 (Y+), shape: {coil_domain.shape}")
-    if 4 in cut_list:
-        coil_domain = coil_domain[:, :, config.cut_width:]
-        logging.info(f"    Cut face 4 (Z-), shape: {coil_domain.shape}")
-    if 5 in cut_list:
-        coil_domain = coil_domain[:, :, :-config.cut_width]
-        logging.info(f"    Cut face 5 (Z+), shape: {coil_domain.shape}")
-
+    # Apply boundary cuts for openings
+    logging.info(f"  Applying boundary cuts (cut_list: {cut_list})")
+    coil_domain = apply_boundary_cuts(coil_domain, cut_list, config.cut_width)
     logging.info(f"    After cutting shape: {coil_domain.shape}, Voxels: {np.count_nonzero(coil_domain)}")
 
     # Save debug output

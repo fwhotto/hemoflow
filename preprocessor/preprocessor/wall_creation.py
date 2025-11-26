@@ -13,15 +13,17 @@ Output labeling:
     1 - wall
     2 - fluid
 
-	
+
 Short description:
 	Takes a boolean voxel description as input and outputs
     wall and fluid cells to nrrd.
-	
+
 """
 
 import numpy as np
 import logging
+from .geometry import apply_boundary_cuts
+
 logger = logging.getLogger(__name__)
 
 def roll_zeropad(a, shift, axis=None):
@@ -149,24 +151,9 @@ def createWalls(inputArray, cutList, cutWidth = 1):
     # Remove layers with no information
     data3, sliced = removeUnusedOuterLayers(data3)
 
-    # Cutlist meaning:
-    # 0,1 => Xmin, Xmax
-    # 2,3 => Ymin, Ymax
-    # 4,5 => Zmin, Zmax
-
-    # Cut outer layer (x,y,z)
-    if 0 in cutList:
-        data3 = data3[cutWidth:,:,:]
-    if 1 in cutList:
-        data3 = data3[:-cutWidth,:,:]
-    if 2 in cutList:
-        data3 = data3[:,cutWidth:,:]
-    if 3 in cutList:
-        data3 = data3[:,:-cutWidth,:]
-    if 4 in cutList:
-        data3 = data3[:,:,cutWidth:]
-    if 5 in cutList:
-        data3 = data3[:,:,:-cutWidth]
+    # Apply boundary cuts for openings
+    # Cutlist meaning: 0=X-, 1=X+, 2=Y-, 3=Y+, 4=Z-, 5=Z+
+    data3 = apply_boundary_cuts(data3, cutList, cutWidth)
 
     return data3.astype(np.short, copy=False), sliced
 

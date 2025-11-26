@@ -275,3 +275,39 @@ def scaleAndShiftData(points: List, scale: Tuple, shift: Tuple) -> List:
             pts[j] = (pts[j] + shift[j]) * scale[j]
         points[i] = pts
     return points
+
+
+def apply_boundary_cuts(volume: np.ndarray,
+                       cut_list: np.ndarray,
+                       cut_width: int = 1) -> np.ndarray:
+    """Apply boundary layer cuts for opening creation.
+
+    Cuts specified layers from domain boundaries.
+    Face indices: 0=X-, 1=X+, 2=Y-, 3=Y+, 4=Z-, 5=Z+
+
+    Note: Cuts are applied sequentially, so shape changes affect subsequent cuts.
+
+    Args:
+        volume: Input volume array
+        cut_list: Array of face indices to cut
+        cut_width: Number of layers to cut from each face
+
+    Returns:
+        Volume with boundary layers removed
+    """
+    result = volume.copy()
+
+    if 0 in cut_list:
+        result = result[cut_width:, :, :]
+    if 1 in cut_list:
+        result = result[:-cut_width, :, :]
+    if 2 in cut_list:
+        result = result[:, cut_width:, :]
+    if 3 in cut_list:
+        result = result[:, :-cut_width, :]
+    if 4 in cut_list:
+        result = result[:, :, cut_width:]
+    if 5 in cut_list:
+        result = result[:, :, :-cut_width]
+
+    return result
