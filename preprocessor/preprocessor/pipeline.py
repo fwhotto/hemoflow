@@ -12,6 +12,7 @@ from vtkmodules.vtkIOXML import vtkXMLPolyDataReader
 
 # Import configuration and models
 from .config import PreprocessorConfig
+from .constants import VoxelLabels
 from .models import VoxelizationResult, OpeningData, GeometryResult, StentResult
 
 # Import processing modules
@@ -540,7 +541,7 @@ def process_coil(config: PreprocessorConfig,
     logging.info(f"  Values at coil positions before: {dict(zip(unique_before, counts_before))}")
 
     # Mark coil as wall
-    geometry_volume[coil_domain] = 1  # WALL_VOXEL = 1
+    geometry_volume[coil_domain] = VoxelLabels.WALL
 
     # Check what values exist at coil positions after
     coil_positions_after = geometry_volume[coil_domain]
@@ -548,7 +549,7 @@ def process_coil(config: PreprocessorConfig,
     logging.info(f"  Values at coil positions after: {dict(zip(unique_after, counts_after))}")
 
     # Count total walls in final geometry
-    wall_count = np.count_nonzero(geometry_volume == 1)
+    wall_count = np.count_nonzero(geometry_volume == VoxelLabels.WALL)
     logging.info(f"  Total wall voxels in final geometry: {wall_count}")
 
     return geometry_volume

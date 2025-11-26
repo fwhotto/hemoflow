@@ -1,26 +1,12 @@
-def constant(f):
-    def fset(self, value):
-        raise TypeError
-    def fget(self):
-        return f()
-    return property(fget, fset)
+from enum import IntEnum
 
-class const(object):
-    @constant
-    def UNUSED_VOXEL():
-        return 0
-    @constant
-    def WALL_VOXEL():
-        return 1
-    @constant
-    def FLUID_VOXEL():
-        return 2
-    @constant
-    def INLET_VOXEL():
-        return 10
-    @constant
-    def OUTLET_VOXEL():
-        return 11
-    @constant
-    def OUTLET_REST_VOXEL():
-        return 12
+class VoxelLabels(IntEnum):
+    """
+    Defines a set of integer labels for categorizing voxel types.
+    """
+    UNUSED = 0
+    WALL = 1
+    FLUID = 2
+    INLET = 10
+    OUTLET = 11
+    OUTLET_REST = 12

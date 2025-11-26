@@ -1,54 +1,53 @@
 import sys
 import numpy as np
-from .constants import const
+from .constants import VoxelLabels
 
 import logging
 logger = logging.getLogger(__name__)
 
-CONSTANTS = const()
 
 def has_neighboring_unused_voxel(x, y, z, data):
-    if data[z - 1][x][y] == CONSTANTS.UNUSED_VOXEL:
+    if data[z - 1][x][y] == VoxelLabels.UNUSED:
         return True
-    elif data[z + 1][x][y] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z + 1][x][y] == VoxelLabels.UNUSED:
         return True
-    elif data[z][x - 1][y] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z][x - 1][y] == VoxelLabels.UNUSED:
         return True
-    elif data[z][x + 1][y] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z][x + 1][y] == VoxelLabels.UNUSED:
         return True
-    elif data[z][x][y - 1] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z][x][y - 1] == VoxelLabels.UNUSED:
         return True
-    elif data[z][x][y + 1] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z][x][y + 1] == VoxelLabels.UNUSED:
         return True
     return False
 
 def get_all_inlet_outlet_fluid_voxels(walls, data):
     for z, x, y in walls: 
-        if data[z - 1][x][y] == CONSTANTS.FLUID_VOXEL:
+        if data[z - 1][x][y] == VoxelLabels.FLUID:
             if has_neighboring_unused_voxel(x, y, z - 1, data):
                 yield (z - 1, x, y)
-        elif data[z + 1][x][y] == CONSTANTS.FLUID_VOXEL:
+        elif data[z + 1][x][y] == VoxelLabels.FLUID:
             if has_neighboring_unused_voxel(x, y, z + 1, data):
                 yield (z + 1, x, y)
-        elif data[z][x - 1][y] == CONSTANTS.FLUID_VOXEL:
+        elif data[z][x - 1][y] == VoxelLabels.FLUID:
             if has_neighboring_unused_voxel(x - 1, y, z, data):
                 yield (z, x - 1, y)
-        elif data[z][x + 1][y] == CONSTANTS.FLUID_VOXEL:
+        elif data[z][x + 1][y] == VoxelLabels.FLUID:
             if has_neighboring_unused_voxel(x + 1, y, z, data):
                 yield (z, x + 1, y)
-        elif data[z][x][y - 1] == CONSTANTS.FLUID_VOXEL:
+        elif data[z][x][y - 1] == VoxelLabels.FLUID:
             if has_neighboring_unused_voxel(x, y - 1, z, data):
                 yield (z, x, y - 1)
-        elif data[z][x][y + 1] == CONSTANTS.FLUID_VOXEL:
+        elif data[z][x][y + 1] == VoxelLabels.FLUID:
             if has_neighboring_unused_voxel(x, y + 1, z, data):
                 yield (z, x, y + 1)
 
 def get_neighbouring_unused_voxel_plane(x, y, z, data):
-    if data[z - 1][x][y] == CONSTANTS.UNUSED_VOXEL or data[z + 1][x][y] == CONSTANTS.UNUSED_VOXEL:
+    if data[z - 1][x][y] == VoxelLabels.UNUSED or data[z + 1][x][y] == VoxelLabels.UNUSED:
         return "z"
-    elif data[z][x - 1][y] == CONSTANTS.UNUSED_VOXEL or data[z][x + 1][y] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z][x - 1][y] == VoxelLabels.UNUSED or data[z][x + 1][y] == VoxelLabels.UNUSED:
         return "x"
-    elif data[z][x][y - 1] == CONSTANTS.UNUSED_VOXEL or data[z][x][y + 1] == CONSTANTS.UNUSED_VOXEL:
+    elif data[z][x][y - 1] == VoxelLabels.UNUSED or data[z][x][y + 1] == VoxelLabels.UNUSED:
         return "y"
 
 def find_inlet_outlet(x, y, z, data, plane):
@@ -97,7 +96,7 @@ def recur_find_inlet_outlet(x, y, z, prev_x, prev_y, prev_z, result, data, plane
                     y_n = y + dy
                     z_n = z + dz
                     if ((x_n, y_n, z_n) != (prev_x, prev_y, prev_z) and
-                            data[z_n][x_n][y_n] == CONSTANTS.FLUID_VOXEL and
+                            data[z_n][x_n][y_n] == VoxelLabels.FLUID and
                             has_neighboring_unused_voxel(x_n, y_n, z_n, data) and
                             (x_n, y_n, z_n) not in result):
                         result = recur_find_inlet_outlet(x_n, y_n, z_n, x, y, z, result, data, plane)
@@ -110,7 +109,7 @@ def detect_inlets_outlets(data):
         - The inlets and outlets are cut parallel to the x, y or z plane.
     """
     logger.info("Detecting all fluid voxels surrounded by an unused voxel...")
-    wall_voxels = zip(*np.where(data == CONSTANTS.WALL_VOXEL))
+    wall_voxels = zip(*np.where(data == VoxelLabels.WALL))
     found_fluid_voxels = list(get_all_inlet_outlet_fluid_voxels(wall_voxels, data))
     # voxel_count = len(found_fluid_voxels)
     inlets_outlets = []
@@ -145,8 +144,8 @@ def paint_inlets_outlets(inlets_outlets, data, findBoundaryByArea=True):
         inletIdx = 0
         pressureOutletIdx = -1
         
-    openingIdx[inletIdx] = CONSTANTS.INLET_VOXEL
-    openingIdx[pressureOutletIdx] = CONSTANTS.OUTLET_VOXEL
+    openingIdx[inletIdx] = VoxelLabels.INLET
+    openingIdx[pressureOutletIdx] = VoxelLabels.OUTLET
 
     logger.info("Number of inlets: 1")
     logger.info("Number of pressure outlets: 1")
@@ -155,7 +154,7 @@ def paint_inlets_outlets(inlets_outlets, data, findBoundaryByArea=True):
     outletCount = 0
     for i in range(numOpenings):
         if not openingIdx[i]:
-            openingIdx[i] = (CONSTANTS.OUTLET_REST_VOXEL + outletCount)
+            openingIdx[i] = (VoxelLabels.OUTLET_REST + outletCount)
             outletCount += 1
     
     openingCenter = []
